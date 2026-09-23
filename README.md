@@ -21,7 +21,7 @@ All **44 supplied 2048², 16-bit heightmaps** are included as optimized 256², 1
 
 **Undo / Ctrl+Z**, **Redo / Ctrl+Y / Ctrl+Shift+Z**, or click a history row to return to that state. The history keeps up to **2,000 edits or 256 MiB**, retiring oldest steps when either budget is reached. One unusually large edit is retained even when it exceeds the budget. Starting a new stroke after undo replaces the redo branch. Ocean and expansion changes are included. The list shows a moving window of history with jumps to the oldest and latest states.
 
-**New ocean world** starts with no allocated terrain. Opening another world or starting a new one first downloads the current world as a backup after confirmation. **Export heightmap** writes a 16-bit, big-endian PGM image, with heights from -1 to 2 mapped to 0–65535; its header includes origin and sea level. Whole-world export is limited to 16 million samples. `.fmm` retains full float precision and tiled coordinates.
+**New ocean world** starts with no allocated terrain. Opening another world first downloads the current world as a backup after confirmation. Resetting a world is undoable. **Export heightmap** writes a 16-bit, big-endian PGM image, with heights from -1 to 2 mapped to 0–65535; its header includes origin and sea level. Whole-world export is limited to 16 million samples. `.fmm` retains full float precision and tiled coordinates.
 
 ## Running manually
 
@@ -43,3 +43,15 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the storage model, current limits, an
 `npm test` exercises brushes across tile boundaries, undo/redo branching and budgets, expansion, sea-level history, lossless file round trips, corrupt input, and all supplied brush masks.
 
 The interface uses Canvas 2D and [Three.js](https://threejs.org/docs/). A WebGL 2 browser is required for the 3D view; 2D editing remains available if WebGL initialization fails.
+
+## Biome painting and lighting (v0.2)
+
+Switch the left panel to **Biomes** or press **B**. Choose grassland, forest, rainforest, taiga, savanna, desert, tundra, wetland, rock, or snow. The current brush shape, size, rotation, and strength control painting. Painting affects land above sea level and leaves heights unchanged. **Natural / E**, or **Shift while painting**, removes paint to reveal automatic terrain coloring. The Biomes layer checkbox toggles the painted overlay. Paint strokes use the same undo/redo history as sculpting.
+
+Unpainted terrain is colored by elevation, slope, and deterministic moisture/surface variation. Biomes blend over that base rather than replacing terrain heights. Steep slopes expose rock, snow favors shelves, coasts become sandy, and high elevations transition into alpine terrain and snow. These are procedural visual approximations, not a climate or ecosystem simulation.
+
+The 3D view uses stronger directional sunlight, reduced ambient fill, terrain shadows, and finer two-sample mesh spacing. Open **Sunlight & shadows** to change sun height and direction or disable shadows on slower hardware. Lighting and relief are view settings; biome paint is saved with the world.
+
+**Reset views** rebuilds both render caches and resets cameras without touching your world. **Reset world** offers empty ocean or starter islands. It resets extent, heights, paint, and sea level while retaining the name, and is recorded as one undoable operation. Its history obeys the same memory budget as other operations. New ocean world opens the same reset dialog.
+
+New saves use FMM version 2 and include biome weights and reset history. Existing version 1 worlds remain readable. Older app versions cannot open the new saves.

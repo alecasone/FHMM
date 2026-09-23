@@ -1,4 +1,4 @@
-import { world, history, map, scene, refresh, toast, endStroke, fit } from './main.js';
+import { world, history, map, scene, refresh, toast, endStroke, fit, resetViews } from './main.js';
 import { World, History, TILE } from './world.js';
 import { encodeWorld, decodeWorld } from './file-format.js';
 const $ = s => document.querySelector(s);
@@ -19,9 +19,9 @@ window.addEventListener('world-changed', () => { dirty = true; generation++; sch
 window.addEventListener('beforeunload', e => { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
 document.addEventListener('visibilitychange', () => { if (document.hidden) recoverSave(); });
 function replace(loaded) {
-  endStroke(); world.tiles = loaded.world.tiles; world.bounds = loaded.world.bounds; world.sea = loaded.world.sea; world.ocean = loaded.world.ocean; world.name = loaded.world.name; world.invalidate();
+  endStroke(); world.tiles = loaded.world.tiles; world.biomes = loaded.world.biomes; world.biomesVisible = loaded.world.biomesVisible; world.bounds = loaded.world.bounds; world.sea = loaded.world.sea; world.ocean = loaded.world.ocean; world.name = loaded.world.name; world.dirty.clear(); world.invalidate();
   history.entries = loaded.history.entries; history.cursor = loaded.history.cursor; history.bytes = loaded.history.bytes; history.trimmed = loaded.history.trimmed;
-  map.cache.clear(); map.pending.clear(); map.invalidate(); scene?.invalidate(); refresh(); fit();
+  resetViews(false); refresh();
 }
 $('#save').onclick = () => { endStroke(); download(encodeWorld(world, history), `${filename()}.fmm`); $('#save-status').textContent = 'World file saved'; dirty = true; generation++; recoverSave(); toast('World saved, including undo and redo history.'); };
 $('#open').onclick = () => $('#file-input').click();
@@ -31,11 +31,7 @@ $('#file-input').onchange = async e => {
   catch (error) { toast(error.message); }
   finally { e.target.value = ''; }
 };
-$('#blank').onclick = () => {
-  if (!confirm('Start an empty ocean world? Your current world will be downloaded as a backup first.')) return;
-  endStroke(); download(encodeWorld(world, history), `${filename()}-backup.fmm`);
-  const blank = new World(); blank.name = 'A New World'; replace({ world: blank, history: new History(blank) }); dirty = true; generation++; schedule(); toast('An open ocean, ready for your first continent.');
-};
+$('#blank').onclick = () => $('#reset-world').click();
 $('#export').onclick = () => {
   endStroke(); const b = world.bounds, w = b.maxX - b.minX, h = b.maxY - b.minY;
   if (w * h > 16 * 1024 * 1024) { toast('Heightmap export is limited to 16 million samples. Save the tiled .fmm world for larger maps.'); return; }

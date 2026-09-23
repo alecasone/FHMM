@@ -1,4 +1,6 @@
-import { World, History, seedWorld, dab, TILE } from './world.js';
+import { World, History, seedWorld, dab, TILE, resetWorld } from './world.js';
+import { BIOMES, BIOME_COUNT } from './biomes.js';
+import { renderViews } from './render-loop.js';
 import { MapView } from './map-view.js';
 import { SceneView } from './scene-view.js';
 
@@ -8,12 +10,22 @@ const history = new History(world);
 const map = new MapView($('#map'), world);
 let scene;
 try { scene = new SceneView($('#scene'), world); } catch (error) { console.error(error); $('.scene-error').hidden = false; }
-let tool = 'raise', radius = 56, strength = .45, rotation = 0, mask = null, stroke = null, lastPoint = null, currentPoint = null, space = false, pan = null;
+let tool = 'raise', biome = 0, radius = 56, strength = .45, rotation = 0, mask = null, stroke = null, lastPoint = null, currentPoint = null, space = false, pan = null;
 let modifiers = { shift: false, alt: false }, lastTime = 0, toastTimer;
-const labels = { raise: 'Raise terrain', lower: 'Lower terrain', flatten: 'Flatten terrain', smooth: 'Smooth terrain', stamp: 'Stamp terrain', pan: 'Pan view' };
+const labels = { raise: 'Raise terrain', lower: 'Lower terrain', flatten: 'Flatten terrain', smooth: 'Smooth terrain', stamp: 'Stamp terrain', pan: 'Pan view', paint: 'Paint biome', erase: 'Restore natural color' };
 function toast(message) { $('#toast').textContent = message; $('#toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').hidden = true, 3500); }
-function selectTool(next) { tool = next; document.querySelectorAll('[data-tool]').forEach(b => b.classList.toggle('active', b.dataset.tool === tool)); $('#stroke-hint').textContent = tool === 'pan' ? 'Drag to move the view' : tool === 'stamp' ? 'Click to place a heightmap stamp' : `Click and drag to ${tool} terrain`; $('#map').style.cursor = tool === 'pan' ? 'grab' : 'crosshair'; }
+function selectTool(next) {
+  endStroke(); tool = next; const painting = tool === 'paint' || tool === 'erase';
+  $('#sculpt-tools').hidden = painting; $('#biome-tools').hidden = !painting;
+  $('#modifier-hint').textContent = painting ? 'Erase paint temporarily' : 'Smooth temporarily';
+  document.querySelectorAll('[data-mode]').forEach(b => b.classList.toggle('active', b.dataset.mode === (painting ? 'paint' : 'sculpt')));
+  document.querySelectorAll('[data-tool]').forEach(b => b.classList.toggle('active', b.dataset.tool === tool));
+  $('#stroke-hint').textContent = tool === 'paint' ? `Paint ${BIOMES[biome].name.toLowerCase()} · Shift to erase` : tool === 'erase' ? 'Remove biome paint to restore natural coloring' : tool === 'pan' ? 'Drag to move the view' : tool === 'stamp' ? 'Click to place a heightmap stamp' : `Click and drag to ${tool} terrain`;
+  $('#map').style.cursor = tool === 'pan' ? 'grab' : 'crosshair';
+}
 document.querySelectorAll('[data-tool]').forEach(b => b.onclick = () => selectTool(b.dataset.tool));
+document.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => selectTool(b.dataset.mode === 'paint' ? 'paint' : 'raise'));
+BIOMES.forEach((preset, index) => { const button = document.createElement('button'); button.dataset.biome = preset.id; button.className = `biome-swatch${index === biome ? ' active' : ''}`; button.title = `Paint ${preset.name.toLowerCase()}`; const swatch = document.createElement('i'); swatch.style.backgroundColor = preset.color; const label = document.createElement('span'); label.textContent = preset.name; button.append(swatch, label); button.onclick = () => { biome = index; selectTool('paint'); document.querySelectorAll('[data-biome]').forEach(b => b.classList.toggle('active', b === button)); }; $('#biome-palette').append(button); });
 $('#radius').oninput = e => { radius = +e.target.value; $('#radius-value').textContent = radius * 2; };
 $('#strength').oninput = e => { strength = +e.target.value / 100; $('#strength-value').textContent = `${e.target.value}%`; };
 $('#rotation').oninput = e => { rotation = +e.target.value / 180 * Math.PI; $('#rotation-value').textContent = `${e.target.value}°`; };
@@ -23,7 +35,7 @@ function refresh() {
   $('#history-memory').textContent = `${(history.bytes / 1048576).toFixed(1)} MB of 256 MB${history.trimmed ? ` · ${history.trimmed} oldest steps retired` : ' history budget'}`;
   const list = $('#history-list'); list.replaceChildren();
   const first = Math.max(0, history.cursor - 70), last = Math.min(history.entries.length, first + 140);
-  const row = (cursor, title, detail) => { const b = document.createElement('button'); b.className = `history-entry${history.cursor === cursor ? ' current' : ''}${cursor > history.cursor ? ' future' : ''}`; b.dataset.cursor = cursor; const icon = document.createElement('span'); icon.textContent = cursor ? '↳' : '◈'; const body = document.createElement('div'); body.textContent = title; const small = document.createElement('small'); small.textContent = detail; body.append(small); const dot = document.createElement('span'); dot.textContent = cursor === history.cursor ? '●' : ''; b.append(icon, body, dot); b.onclick = () => { history.goTo(cursor); afterHistory(); }; list.append(b); };
+  const row = (cursor, title, detail) => { const b = document.createElement('button'); b.className = `history-entry${history.cursor === cursor ? ' current' : ''}${cursor > history.cursor ? ' future' : ''}`; b.dataset.cursor = cursor; const icon = document.createElement('span'); icon.textContent = cursor ? '↳' : '◈'; const body = document.createElement('div'); body.textContent = title; const small = document.createElement('small'); small.textContent = detail; body.append(small); const dot = document.createElement('span'); dot.textContent = cursor === history.cursor ? '●' : ''; b.append(icon, body, dot); b.onclick = () => { endStroke(); history.goTo(cursor); afterHistory(); }; list.append(b); };
   if (!first) row(0, history.trimmed ? 'Oldest retained state' : 'World created', history.trimmed ? 'Earlier steps exceeded the budget' : 'Starting landscape');
   else row(0, 'Go to oldest retained state', 'Jump to the beginning of history');
   for (let i = first; i < last; i++) row(i + 1, history.entries[i].label, `Step ${(i + 1 + history.trimmed).toLocaleString()}`);
@@ -31,21 +43,22 @@ function refresh() {
   const selectedRow = list.querySelector('.current');
   if (selectedRow) list.scrollTop = Math.max(0, selectedRow.offsetTop - list.offsetTop - list.clientHeight + selectedRow.offsetHeight);
   const b = world.bounds; $('#world-size').textContent = `${(b.maxX - b.minX).toLocaleString()} × ${(b.maxY - b.minY).toLocaleString()}`;
-  $('#world-stats').textContent = `${world.tiles.size} terrain tiles · ${(world.tiles.size * TILE * TILE * 4 / 1048576).toFixed(1)} MB`;
+  $('#world-stats').textContent = `${world.tiles.size} terrain tiles · ${((world.tiles.size * 4 + world.biomes.size * BIOME_COUNT) * TILE * TILE / 1048576).toFixed(1)} MB`;
   $('#sea').value = Math.round(world.sea * 1000); $('#sea-value').textContent = `${Math.round(world.sea * 1000)} m`; $('#ocean').checked = world.ocean; $('#world-name').value = world.name;
+  $('#biomes-visible').checked = world.biomesVisible;
 }
 function changed() { $('#save-status').textContent = 'Unsaved changes'; refresh(); window.dispatchEvent(new Event('world-changed')); }
-function afterHistory() { map.invalidate(); scene?.invalidate(); changed(); }
+function afterHistory() { map.invalidate(); scene?.invalidate(); if (history.entries[history.cursor]?.reset || history.entries[history.cursor - 1]?.reset) resetViews(false); changed(); }
 $('#undo').onclick = () => { endStroke(); if (history.undo()) afterHistory(); };
 $('#redo').onclick = () => { endStroke(); if (history.redo()) afterHistory(); };
 function cursor(point) { currentPoint = point; map.cursor = point && { ...point, radius }; map.needsDraw = true; scene?.cursor(point, radius); if (point) $('#coordinates').textContent = `X ${Math.round(point.x)} · Y ${Math.round(point.y)} · ${Math.round(world.sample(point.x, point.y) * 1000)} m`; }
 function paint(point, dt = 1) {
   if (!point || !stroke) return;
-  let activeTool = modifiers.shift ? 'smooth' : tool;
+  let activeTool = modifiers.shift ? (tool === 'paint' || tool === 'erase' ? 'erase' : 'smooth') : tool;
   if (modifiers.alt) activeTool = activeTool === 'raise' ? 'lower' : activeTool === 'lower' ? 'raise' : activeTool;
-  dab(world, stroke, point.x, point.y, { tool: activeTool, radius, strength, rotation, mask, target: stroke.target, dt });
+  dab(world, stroke, point.x, point.y, { tool: activeTool, radius, strength, rotation, mask, target: stroke.target, dt, biome });
 }
-function startStroke(point) { if (!point || !world.inside(point.x, point.y)) return; stroke = history.begin(modifiers.shift ? labels.smooth : labels[tool]); stroke.target = world.sample(point.x, point.y); lastPoint = point; paint(point); }
+function startStroke(point) { if (!point || !world.inside(point.x, point.y)) return; const painting = tool === 'paint' || tool === 'erase'; if (painting && !world.biomesVisible) { toast('Show the Biomes layer before painting.'); return; } stroke = history.begin(modifiers.shift ? labels[painting ? 'erase' : 'smooth'] : tool === 'paint' ? `Paint ${BIOMES[biome].name.toLowerCase()}` : labels[tool]); stroke.target = world.sample(point.x, point.y); lastPoint = point; paint(point); }
 function endStroke() { if (stroke) { if (history.commit(stroke)) changed(); stroke = null; lastPoint = null; } pan = null; if (scene) scene.controls.enabled = true; }
 function bindCanvas(canvas, pointFor, is3D = false) {
   canvas.addEventListener('contextmenu', e => e.preventDefault());
@@ -75,17 +88,24 @@ function bindCanvas(canvas, pointFor, is3D = false) {
   canvas.addEventListener('pointerleave', () => { if (!stroke) cursor(null); });
 }
 bindCanvas($('#map'), e => map.point(e)); if (scene) bindCanvas(scene.renderer.domElement, e => scene.point(e), true);
-$('#map').addEventListener('wheel', e => { e.preventDefault(); const before = map.point(e); map.zoom = Math.max(.008, Math.min(16, map.zoom * Math.exp(-e.deltaY * .001))); const after = map.point(e); map.center.x += before.x - after.x; map.center.y += before.y - after.y; map.needsDraw = true; }, { passive: false });
-function fit() { map.fit(); const b = world.bounds; scene?.focus((b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2, true); }
+$('#map').addEventListener('wheel', e => { e.preventDefault(); const before = map.point(e); if (!before) return; map.zoom = Math.max(.000001, Math.min(16, map.zoom * Math.exp(-e.deltaY * .001))); const after = map.point(e); map.center.x += before.x - after.x; map.center.y += before.y - after.y; map.needsDraw = true; }, { passive: false });
+function fit() { map.resize(); map.fit(); const b = world.bounds; scene?.resize(); scene?.focus((b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2, true); }
+function resetViews(notify = true) { endStroke(); currentPoint = null; map.reset(); scene?.reset(); fit(); $('.scene-error').hidden = !!scene && !scene.contextLost; $('#coordinates').textContent = 'X 0 · Y 0'; $('#status').textContent = 'Ready to sculpt'; if (notify) toast('Views rebuilt. Your terrain and paint are unchanged.'); }
+$('#reset-views').onclick = () => resetViews();
+$('#reset-world').onclick = () => { endStroke(); $('#reset-dialog').showModal(); };
+document.querySelectorAll('[data-reset]').forEach(button => button.onclick = () => { endStroke(); resetWorld(world, history, button.dataset.reset); $('#reset-dialog').close(); resetViews(false); changed(); toast('World reset. Undo restores the previous terrain and paint.'); });
 $('#fit').onclick = fit; $('#focus').onclick = () => scene?.focus(map.center.x, map.center.y);
-document.querySelectorAll('[data-layout]').forEach(b => b.onclick = () => { $('.viewports').dataset.layout = b.dataset.layout; document.querySelectorAll('[data-layout].active').forEach(el => el.classList.remove('active')); b.classList.add('active'); requestAnimationFrame(() => { map.resize(); scene?.resize(); }); });
+document.querySelectorAll('[data-layout]').forEach(b => b.onclick = () => { endStroke(); cursor(null); $('.viewports').dataset.layout = b.dataset.layout; document.querySelectorAll('[data-layout].active').forEach(el => el.classList.remove('active')); b.classList.add('active'); requestAnimationFrame(() => { map.resize(); scene?.resize(); }); });
 $('#contours').onchange = e => { map.contours = e.target.checked; map.invalidate(); };
 let seaBefore = null;
 $('#sea').oninput = e => { seaBefore ??= world.sea; world.sea = +e.target.value / 1000; $('#sea-value').textContent = `${e.target.value} m`; map.invalidate(); scene?.invalidate(); };
 $('#sea').onchange = () => { history.metadata('Change sea level', { sea: seaBefore ?? world.sea }, { sea: world.sea }); seaBefore = null; changed(); };
 $('#ocean').onchange = e => { const before = world.ocean; world.ocean = e.target.checked; history.metadata(world.ocean ? 'Show ocean' : 'Hide ocean', { ocean: before }, { ocean: world.ocean }); map.invalidate(); scene?.invalidate(); changed(); };
+$('#biomes-visible').onchange = e => { const before = world.biomesVisible; world.biomesVisible = e.target.checked; history.metadata(world.biomesVisible ? 'Show biome paint' : 'Hide biome paint', { biomesVisible: before }, { biomesVisible: world.biomesVisible }); map.invalidate(); scene?.invalidate(); changed(); };
+for (const field of ['sun-elevation', 'sun-azimuth']) $(`#${field}`).oninput = e => { $(`#${field}-value`).textContent = `${e.target.value}°`; if (scene) { scene[field === 'sun-elevation' ? 'sunElevation' : 'sunAzimuth'] = +e.target.value; scene.updateSun(); } };
+$('#shadows').onchange = e => { if (scene) { scene.sun.castShadow = e.target.checked; scene.needsDraw = true; } };
 $('#relief').onchange = e => { if (scene) { scene.relief = +e.target.value; scene.invalidate(); } };
-$('#expand').onclick = () => { const before = structuredClone(world.bounds); world.expand($('#expand-direction').value); history.metadata('Expand world borders', { bounds: before }, { bounds: structuredClone(world.bounds) }); scene?.syncBounds(); fit(); changed(); toast('Borders expanded. New terrain is ready to paint.'); };
+$('#expand').onclick = () => { endStroke(); const before = structuredClone(world.bounds); world.expand($('#expand-direction').value); history.metadata('Expand world borders', { bounds: before }, { bounds: structuredClone(world.bounds) }); scene?.syncBounds(); fit(); changed(); toast('Borders expanded. New terrain is ready to paint.'); };
 $('#world-name').onchange = e => { world.name = e.target.value.trim() || 'Untitled world'; changed(); };
 $('#help').onclick = () => $('#help-dialog').showModal();
 window.addEventListener('keydown', e => {
@@ -94,7 +114,7 @@ window.addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); (e.shiftKey ? $('#redo') : $('#undo')).click(); }
   else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); $('#redo').click(); }
   else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); $('#save').click(); }
-  else if (!e.ctrlKey && !e.metaKey) { const shortcuts = { r: 'raise', l: 'lower', f: 'flatten', s: 'smooth', t: 'stamp', h: 'pan' }; if (shortcuts[e.key.toLowerCase()]) selectTool(shortcuts[e.key.toLowerCase()]); if (e.key === 'Home') { e.preventDefault(); fit(); } if (e.key === '[' || e.key === ']') { $('#radius').value = radius + (e.key === ']' ? 4 : -4); $('#radius').dispatchEvent(new Event('input')); } }
+  else if (!e.ctrlKey && !e.metaKey) { const shortcuts = { r: 'raise', l: 'lower', f: 'flatten', s: 'smooth', t: 'stamp', h: 'pan', b: 'paint', e: 'erase' }; if (shortcuts[e.key.toLowerCase()]) selectTool(shortcuts[e.key.toLowerCase()]); if (e.key === 'Home') { e.preventDefault(); fit(); } if (e.key === '[' || e.key === ']') { $('#radius').value = radius + (e.key === ']' ? 4 : -4); $('#radius').dispatchEvent(new Event('input')); } }
 });
 window.addEventListener('keyup', e => { if (e.code === 'Space') space = false; }); window.addEventListener('blur', () => { space = false; endStroke(); });
 
@@ -113,11 +133,13 @@ async function loadBrushes() {
 await loadBrushes().catch(e => toast(e.message));
 requestAnimationFrame(() => { fit(); refresh(); $('#status').textContent = 'Ready to sculpt'; });
 function frame(time) {
+  requestAnimationFrame(frame);
   if (stroke && currentPoint && tool !== 'stamp' && time - lastTime > 45) { paint(currentPoint, .7); lastTime = time; }
   if (world.dirty.size) { const keys = [...world.dirty]; world.dirty.clear(); map.invalidate(keys); scene?.invalidate(keys); }
-  map.draw(); scene?.draw(); requestAnimationFrame(frame);
+  renderViews([['2D', map], ['3D', scene]], (name, error) => { console.error(`${name} view:`, error); $('#status').textContent = `${name} paused · use Reset views`; toast(`${name} view paused. Use Reset views to rebuild it; your work is retained.`); });
 }
 requestAnimationFrame(frame);
 // Persistence and file interchange are initialized separately from the painting loop.
-export { world, history, map, scene, refresh, changed, toast, endStroke, fit, afterHistory };
+$('#scene').addEventListener('view-error', e => { $('.scene-error').hidden = false; $('.scene-error').textContent = e.detail; });
+export { world, history, map, scene, refresh, changed, toast, endStroke, fit, afterHistory, resetViews };
 import('./persistence.js').catch(error => toast(`File storage unavailable: ${error.message}`));

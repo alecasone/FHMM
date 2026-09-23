@@ -1,24 +1,31 @@
-import { TILE, keyOf, terrainColor } from './world.js';
+import { TILE, FLOOR, terrainColor } from './world.js';
+import { BIOME_COUNT, surfaceColor } from './biomes.js';
 export class MapView {
   constructor(canvas, world) {
     this.canvas = canvas; this.ctx = canvas.getContext('2d', { alpha: false }); this.world = world;
     this.center = { x: 0, y: 0 }; this.zoom = 1; this.cache = new Map(); this.pending = new Set(); this.contours = true; this.cursor = null; this.needsDraw = true;
-    this.observer = new ResizeObserver(() => { this.resize(); }); this.observer.observe(canvas);
+    this.fitPending = true; this.observer = new ResizeObserver(() => { this.resize(); }); this.observer.observe(canvas.parentElement); this.resize();
   }
   resize() {
-    const r = this.canvas.getBoundingClientRect(); this.width = r.width; this.height = r.height;
-    const dpr = Math.min(devicePixelRatio, 2); this.canvas.width = Math.round(r.width * dpr); this.canvas.height = Math.round(r.height * dpr); this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0); this.needsDraw = true;
+    const r = this.canvas.parentElement.getBoundingClientRect(); this.width = r.width; this.height = r.height;
+    if (r.width <= 0 || r.height <= 0) return;
+    const dpr = Math.min(devicePixelRatio, 2), w = Math.round(r.width * dpr), h = Math.round(r.height * dpr);
+    if (this.canvas.width !== w || this.canvas.height !== h) { this.canvas.width = w; this.canvas.height = h; }
+    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0); this.needsDraw = true;
+    if (this.fitPending || !Number.isFinite(this.zoom) || this.zoom <= 0) this.fit();
   }
-  fit() { const b = this.world.bounds; this.center = { x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2 }; this.zoom = Math.min((this.width - 70) / (b.maxX - b.minX), (this.height - 100) / (b.maxY - b.minY)); this.needsDraw = true; }
-  point(event) { const r = this.canvas.getBoundingClientRect(); return { x: (event.clientX - r.left - this.width / 2) / this.zoom + this.center.x, y: (event.clientY - r.top - this.height / 2) / this.zoom + this.center.y }; }
+  fit() { const b = this.world.bounds; this.center = { x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2 }; this.fitPending = !(this.width > 0 && this.height > 0); if (!this.fitPending) this.zoom = Math.max(.000001, Math.min(Math.max(1, this.width - 70) / (b.maxX - b.minX), Math.max(1, this.height - 100) / (b.maxY - b.minY))); this.needsDraw = true; }
+  reset() { this.failed = false; this.cache.clear(); this.pending.clear(); this.cursor = null; this.resize(); this.fit(); }
+  point(event) { if (!(this.zoom > 0) || !Number.isFinite(this.zoom) || !this.width || !this.height) return null; const r = this.canvas.getBoundingClientRect(); return { x: (event.clientX - r.left - this.width / 2) / this.zoom + this.center.x, y: (event.clientY - r.top - this.height / 2) / this.zoom + this.center.y }; }
   invalidate(keys) { for (const key of keys ?? this.cache.keys()) if (this.cache.has(key)) this.pending.add(key); this.needsDraw = true; }
   tile(key) {
     const world = this.world, [tx, ty] = key.split(',').map(Number), image = new ImageData(TILE, TILE), data = image.data;
-    const samples = world.tiles.get(key);
+    const samples = world.tiles.get(key), paint = world.biomes.get(key);
     for (let y = 0; y < TILE; y++) for (let x = 0; x < TILE; x++) {
-      const wx = tx * TILE + x, wy = ty * TILE + y, index = y * TILE + x, h = samples[index], color = terrainColor(h, world.sea, world.ocean);
-      const left = x ? samples[index - 1] : world.get(wx - 1, wy), right = x < TILE - 1 ? samples[index + 1] : world.get(wx + 1, wy);
-      const up = y ? samples[index - TILE] : world.get(wx, wy - 1), down = y < TILE - 1 ? samples[index + TILE] : world.get(wx, wy + 1);
+      const wx = tx * TILE + x, wy = ty * TILE + y, index = y * TILE + x, h = samples?.[index] ?? FLOOR;
+      const left = x ? (samples?.[index - 1] ?? FLOOR) : world.get(wx - 1, wy), right = x < TILE - 1 ? (samples?.[index + 1] ?? FLOOR) : world.get(wx + 1, wy);
+      const up = y ? (samples?.[index - TILE] ?? FLOOR) : world.get(wx, wy - 1), down = y < TILE - 1 ? (samples?.[index + TILE] ?? FLOOR) : world.get(wx, wy + 1);
+      const color = world.ocean && h < world.sea ? terrainColor(h, world.sea, true) : surfaceColor(h, world.sea, wx, wy, Math.hypot(left - right, up - down) * 50, paint, index * BIOME_COUNT, world.biomesVisible);
       const slope = (left - right) * 11 + (up - down) * 7;
       let light = Math.max(.57, Math.min(1.35, .93 + slope));
       if (world.ocean && h < world.sea) light = 1;
@@ -29,6 +36,7 @@ export class MapView {
   }
   draw() {
     if (!this.needsDraw || !this.width || !this.height) return;
+    if (!(this.zoom > 0) || !Number.isFinite(this.zoom)) this.fit();
     this.needsDraw = false;
     const c = this.ctx, w = this.width, h = this.height, z = this.zoom, b = this.world.bounds;
     c.fillStyle = '#0e1d26'; c.fillRect(0, 0, w, h);
@@ -36,7 +44,7 @@ export class MapView {
     c.fillStyle = this.world.ocean ? `rgb(${terrainColor(-.18, this.world.sea, true).join(',')})` : '#36463b'; c.fillRect(px(b.minX), py(b.minY), (b.maxX - b.minX) * z, (b.maxY - b.minY) * z);
     c.save(); c.beginPath(); c.rect(px(b.minX), py(b.minY), (b.maxX - b.minX) * z, (b.maxY - b.minY) * z); c.clip();
     let rendered = 0; const visible = new Set();
-    for (const key of this.world.tiles.keys()) {
+    for (const key of new Set([...this.world.tiles.keys(), ...this.world.biomes.keys()])) {
       const [tx, ty] = key.split(',').map(Number), x = px(tx * TILE), y = py(ty * TILE), size = TILE * z;
       if (x + size < 0 || x > w || y + size < 0 || y > h) continue;
       visible.add(key);

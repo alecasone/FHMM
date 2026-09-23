@@ -1,3 +1,4 @@
+import { BIOME_COUNT } from './biomes.js';
 export const TILE = 128;
 export const FLOOR = -.18;
 export const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -6,6 +7,7 @@ export const keyOf = (x, y) => `${x},${y}`;
 export class World {
   constructor() {
     this.tiles = new Map();
+    this.biomes = new Map(); this.biomesVisible = true;
     this.bounds = { minX: -512, minY: -512, maxX: 512, maxY: 512 };
     this.sea = 0; this.ocean = true; this.name = 'The Unwritten Isles';
     this.dirty = new Set(); this.revision = 0;
@@ -21,7 +23,7 @@ export class World {
     return (this.get(ix, iy) * (1 - fx) + this.get(ix + 1, iy) * fx) * (1 - fy) + (this.get(ix, iy + 1) * (1 - fx) + this.get(ix + 1, iy + 1) * fx) * fy;
   }
   set(x, y, value, stroke) {
-    if (!this.inside(x, y)) return;
+    if (!Number.isFinite(value) || !Number.isInteger(x) || !Number.isInteger(y) || !this.inside(x, y)) return;
     const tx = Math.floor(x / TILE), ty = Math.floor(y / TILE), key = keyOf(tx, ty);
     let tile = this.tiles.get(key);
     const index = (y - ty * TILE) * TILE + x - tx * TILE;
@@ -36,19 +38,33 @@ export class World {
     tile[index] = value;
     this.dirty.add(key);
     const lx = x - tx * TILE, ly = y - ty * TILE;
-    if (lx < 2) this.dirty.add(keyOf(tx - 1, ty));
-    if (lx > TILE - 3) this.dirty.add(keyOf(tx + 1, ty));
-    if (ly < 2) this.dirty.add(keyOf(tx, ty - 1));
-    if (ly > TILE - 3) this.dirty.add(keyOf(tx, ty + 1));
-    if (lx < 2 && ly < 2) this.dirty.add(keyOf(tx - 1, ty - 1));
+    // Shared mesh borders and slope shading read samples in adjacent tiles.
+    const xs = [0], ys = [0];
+    if (lx <= 4) xs.push(-1); if (lx >= TILE - 5) xs.push(1);
+    if (ly <= 4) ys.push(-1); if (ly >= TILE - 5) ys.push(1);
+    for (const ox of xs) for (const oy of ys) this.dirty.add(keyOf(tx + ox, ty + oy));
     this.revision++;
+  }
+  paintBiome(x, y, biome, amount, stroke) {
+    if (!this.inside(x, y) || !Number.isFinite(amount) || amount <= 0 || !Number.isInteger(biome) || biome < -1 || biome >= BIOME_COUNT) return;
+    const tx = Math.floor(x / TILE), ty = Math.floor(y / TILE), key = keyOf(tx, ty);
+    let tile = this.biomes.get(key); if (!tile && biome === -1) return;
+    if (!tile) { tile = new Uint8Array(TILE * TILE * BIOME_COUNT); this.biomes.set(key, tile); }
+    const index = (y - ty * TILE) * TILE + x - tx * TILE, offset = index * BIOME_COUNT;
+    const a = Math.min(1, amount), before = tile.slice(offset, offset + BIOME_COUNT); let total = 0, largest = 0;
+    for (let b = 0; b < BIOME_COUNT; b++) { let n = Math.round(tile[offset + b] * (1 - a) + (b === biome ? 255 * a : 0)); if (b === biome && n === before[b] && n < 255) n++; if (biome === -1 && n === before[b] && n > 0) n--; tile[offset + b] = n; total += n; if (n > tile[offset + largest]) largest = b; }
+    if (total > 255) tile[offset + largest] -= total - 255;
+    if (before.every((v, b) => v === tile[offset + b])) return;
+    if (stroke) { let changes = stroke.biomeChanges.get(key); if (!changes) { changes = new Map(); stroke.biomeChanges.set(key, changes); } if (!changes.has(index)) changes.set(index, before); }
+    this.dirty.add(key); this.revision++;
+    if (x - tx * TILE <= 4 || y - ty * TILE <= 4 || x - tx * TILE >= TILE - 5 || y - ty * TILE >= TILE - 5) this.touch(tx, ty);
   }
   touch(tx, ty) {
     // Include neighbors: shared mesh borders and slope shading depend on their samples.
     for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) this.dirty.add(keyOf(tx + dx, ty + dy));
     this.revision++;
   }
-  invalidate() { for (const key of this.tiles.keys()) this.dirty.add(key); this.revision++; }
+  invalidate() { for (const map of [this.tiles, this.biomes]) for (const key of map.keys()) this.dirty.add(key); this.revision++; }
   expand(direction, tiles = 2) {
     const amount = TILE * tiles;
     if (direction === 'all' || direction === 'west') this.bounds.minX -= amount;
@@ -61,13 +77,22 @@ export class World {
 
 export class History {
   constructor(world, budget = 256 * 1024 * 1024, limit = 2000) { this.world = world; this.entries = []; this.cursor = 0; this.bytes = 0; this.budget = budget; this.limit = limit; this.trimmed = 0; }
-  begin(label) { return { label, changes: new Map() }; }
+  begin(label) { return { label, changes: new Map(), biomeChanges: new Map() }; }
   commit(stroke) {
     const patches = []; let bytes = 0;
     for (const [key, changes] of stroke.changes) {
       const tile = this.world.tiles.get(key), indices = [], before = [], after = [];
       for (const [index, value] of changes) if (value !== tile[index]) { indices.push(index); before.push(value); after.push(tile[index]); }
       if (indices.length) { patches.push({ key, indices: Uint16Array.from(indices), before: Float32Array.from(before), after: Float32Array.from(after) }); bytes += indices.length * 10; }
+    }
+    for (const [key, changes] of stroke.biomeChanges ?? []) {
+      const tile = this.world.biomes.get(key), indices = [], before = [], after = [];
+      for (const [index, values] of changes) {
+        const offset = index * BIOME_COUNT;
+        if (values.every((v, b) => v === tile[offset + b])) continue;
+        indices.push(index); for (let b = 0; b < BIOME_COUNT; b++) { before.push(values[b]); after.push(tile[offset + b]); }
+      }
+      if (indices.length) { patches.push({ channel: 'biomes', key, indices: Uint16Array.from(indices), before: Uint8Array.from(before), after: Uint8Array.from(after) }); bytes += indices.length * (2 + 2 * BIOME_COUNT); }
     }
     if (patches.length) this.push({ label: stroke.label, patches, bytes, time: Date.now() });
     return patches.length > 0;
@@ -79,22 +104,45 @@ export class History {
     while (this.entries.length > 1 && (this.bytes > this.budget || this.entries.length > this.limit)) { this.bytes -= this.entries.shift().bytes; this.cursor--; this.trimmed++; }
   }
   apply(entry, forward) {
+    if (entry.before && entry.after) { Object.assign(this.world, structuredClone(forward ? entry.after : entry.before)); this.world.invalidate(); }
     if (entry.patches) for (const patch of entry.patches) {
-      let tile = this.world.tiles.get(patch.key);
-      if (!tile) { tile = new Float32Array(TILE * TILE).fill(FLOOR); this.world.tiles.set(patch.key, tile); }
+      const paint = patch.channel === 'biomes', store = paint ? this.world.biomes : this.world.tiles, stride = paint ? BIOME_COUNT : 1;
+      let tile = store.get(patch.key);
+      if (!tile) { tile = paint ? new Uint8Array(TILE * TILE * BIOME_COUNT) : new Float32Array(TILE * TILE).fill(FLOOR); store.set(patch.key, tile); }
       const values = forward ? patch.after : patch.before;
-      for (let i = 0; i < patch.indices.length; i++) tile[patch.indices[i]] = values[i];
+      for (let i = 0; i < patch.indices.length; i++) for (let b = 0; b < stride; b++) tile[patch.indices[i] * stride + b] = values[i * stride + b];
+      if (entry.reset && tile.every(v => v === (paint ? 0 : Math.fround(FLOOR)))) store.delete(patch.key);
       const [x, y] = patch.key.split(',').map(Number); this.world.touch(x, y);
     }
-    else { Object.assign(this.world, structuredClone(forward ? entry.after : entry.before)); this.world.invalidate(); }
   }
   undo() { if (!this.cursor) return false; this.apply(this.entries[--this.cursor], false); return true; }
   redo() { if (this.cursor === this.entries.length) return false; this.apply(this.entries[this.cursor++], true); return true; }
-  goTo(cursor) { while (this.cursor > cursor) this.undo(); while (this.cursor < cursor) this.redo(); }
+  goTo(cursor) { if (!Number.isInteger(cursor) || cursor < 0 || cursor > this.entries.length) return; while (this.cursor > cursor) this.undo(); while (this.cursor < cursor) this.redo(); }
+}
+
+export function resetWorld(world, history, preset = 'ocean') {
+  const next = new World(); if (preset === 'islands') seedWorld(next);
+  const metadata = w => ({ bounds: structuredClone(w.bounds), sea: w.sea, ocean: w.ocean, biomesVisible: w.biomesVisible });
+  const entry = { label: preset === 'islands' ? 'Reset to starter islands' : 'Reset to empty ocean', reset: true, before: metadata(world), after: metadata(next), patches: [], bytes: 512, time: Date.now() };
+  for (const channel of ['height', 'biomes']) {
+    const current = channel === 'height' ? world.tiles : world.biomes, target = channel === 'height' ? next.tiles : next.biomes;
+    const stride = channel === 'height' ? 1 : BIOME_COUNT, Type = stride === 1 ? Float32Array : Uint8Array, baseline = stride === 1 ? Math.fround(FLOOR) : 0;
+    for (const key of new Set([...current.keys(), ...target.keys()])) {
+      const old = current.get(key), fresh = target.get(key), indices = [], before = [], after = [];
+      for (let i = 0; i < TILE * TILE; i++) {
+        let changed = false; for (let b = 0; b < stride; b++) if ((old?.[i * stride + b] ?? baseline) !== (fresh?.[i * stride + b] ?? baseline)) { changed = true; break; }
+        if (!changed) continue;
+        indices.push(i); for (let b = 0; b < stride; b++) { before.push(old?.[i * stride + b] ?? baseline); after.push(fresh?.[i * stride + b] ?? baseline); }
+      }
+      if (indices.length) { entry.patches.push({ key, channel, indices: Uint16Array.from(indices), before: Type.from(before), after: Type.from(after) }); entry.bytes += indices.length * (2 + stride * Type.BYTES_PER_ELEMENT * 2); }
+    }
+  }
+  world.tiles = next.tiles; world.biomes = next.biomes; Object.assign(world, metadata(next)); world.dirty.clear(); world.invalidate(); history.push(entry);
 }
 
 export function dab(world, stroke, cx, cy, options) {
-  const { radius, strength, tool, mask, rotation = 0, target = 0, dt = 1 } = options;
+  const { radius, strength, tool, mask, rotation = 0, target = 0, dt = 1, biome = 0 } = options;
+  if (![cx, cy, radius, strength, rotation, target, dt].every(Number.isFinite) || radius <= 0) return;
   const b = world.bounds, cos = Math.cos(rotation), sin = Math.sin(rotation);
   const left = Math.max(b.minX, Math.floor(cx - radius)), right = Math.min(b.maxX - 1, Math.ceil(cx + radius));
   const top = Math.max(b.minY, Math.floor(cy - radius)), bottom = Math.min(b.maxY - 1, Math.ceil(cy + radius));
@@ -121,6 +169,7 @@ export function dab(world, stroke, cx, cy, options) {
       weight *= mask.data[my * mask.size + mx] / 65535;
     }
     const current = world.get(x, y), amount = strength * weight * dt;
+    if (tool === 'paint' || tool === 'erase') { if (current >= world.sea) world.paintBiome(x, y, tool === 'erase' ? -1 : biome, amount * .5, stroke); continue; }
     let value = current;
     if (tool === 'raise' || tool === 'lower') value += amount * .055 * (tool === 'raise' ? 1 : -1);
     if (tool === 'flatten') value += (target - current) * Math.min(1, amount * .38);
