@@ -1,6 +1,7 @@
 import { World, History, seedWorld, dab, TILE, resetWorld } from './world.js';
 import { BIOMES, BIOME_COUNT } from './biomes.js';
 import { renderViews } from './render-loop.js';
+import { StrokePath, accumulatesWhileHeld } from './brush-stroke.js';
 import { MapView } from './map-view.js';
 import { SceneView } from './scene-view.js';
 
@@ -10,10 +11,15 @@ const history = new History(world);
 const map = new MapView($('#map'), world);
 let scene;
 try { scene = new SceneView($('#scene'), world); } catch (error) { console.error(error); $('.scene-error').hidden = false; }
-let tool = 'raise', biome = 0, radius = 56, strength = .45, rotation = 0, mask = null, stroke = null, lastPoint = null, currentPoint = null, space = false, pan = null;
+let tool = 'raise', biome = 0, radius = 56, strength = .45, rotation = 0, brushMode = 'blend', strokeHeight = .3, mask = null, stroke = null, strokePath = null, currentPoint = null, space = false, pan = null;
 let modifiers = { shift: false, alt: false }, lastTime = 0, toastTimer;
 const labels = { raise: 'Raise terrain', lower: 'Lower terrain', flatten: 'Flatten terrain', smooth: 'Smooth terrain', stamp: 'Stamp terrain', pan: 'Pan view', paint: 'Paint biome', erase: 'Restore natural color' };
 function toast(message) { $('#toast').textContent = message; $('#toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').hidden = true, 3500); }
+function brushSettings() {
+  const sculpt = ['raise', 'lower', 'stamp'].includes(tool), blend = brushMode === 'blend';
+  $('#buildup-settings').hidden = !sculpt; $('#stroke-height-control').hidden = !blend;
+  $('#buildup-note').textContent = blend ? `Up to ${Math.round(strokeHeight * strength * 1000)} m per stroke at this strength. Overlap stays even; release to build another layer.` : tool === 'stamp' ? 'Each click places one heightmap from the sampled height. Blend applies a gentler layer.' : 'Height keeps building as you drag or hold. Use Blend for controlled layers.';
+}
 function selectTool(next) {
   endStroke(); tool = next; const painting = tool === 'paint' || tool === 'erase';
   $('#sculpt-tools').hidden = painting; $('#biome-tools').hidden = !painting;
@@ -22,13 +28,17 @@ function selectTool(next) {
   document.querySelectorAll('[data-tool]').forEach(b => b.classList.toggle('active', b.dataset.tool === tool));
   $('#stroke-hint').textContent = tool === 'paint' ? `Paint ${BIOMES[biome].name.toLowerCase()} · Shift to erase` : tool === 'erase' ? 'Remove biome paint to restore natural coloring' : tool === 'pan' ? 'Drag to move the view' : tool === 'stamp' ? 'Click to place a heightmap stamp' : `Click and drag to ${tool} terrain`;
   $('#map').style.cursor = tool === 'pan' ? 'grab' : 'crosshair';
+  brushSettings();
 }
 document.querySelectorAll('[data-tool]').forEach(b => b.onclick = () => selectTool(b.dataset.tool));
 document.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => selectTool(b.dataset.mode === 'paint' ? 'paint' : 'raise'));
 BIOMES.forEach((preset, index) => { const button = document.createElement('button'); button.dataset.biome = preset.id; button.className = `biome-swatch${index === biome ? ' active' : ''}`; button.title = `Paint ${preset.name.toLowerCase()}`; const swatch = document.createElement('i'); swatch.style.backgroundColor = preset.color; const label = document.createElement('span'); label.textContent = preset.name; button.append(swatch, label); button.onclick = () => { biome = index; selectTool('paint'); document.querySelectorAll('[data-biome]').forEach(b => b.classList.toggle('active', b === button)); }; $('#biome-palette').append(button); });
-$('#radius').oninput = e => { radius = +e.target.value; $('#radius-value').textContent = radius * 2; };
-$('#strength').oninput = e => { strength = +e.target.value / 100; $('#strength-value').textContent = `${e.target.value}%`; };
-$('#rotation').oninput = e => { rotation = +e.target.value / 180 * Math.PI; $('#rotation-value').textContent = `${e.target.value}°`; };
+$('#radius').oninput = e => { endStroke(); radius = +e.target.value; $('#radius-value').textContent = radius * 2; };
+$('#strength').oninput = e => { endStroke(); strength = +e.target.value / 100; $('#strength-value').textContent = `${e.target.value}%`; brushSettings(); };
+$('#rotation').oninput = e => { endStroke(); rotation = +e.target.value / 180 * Math.PI; $('#rotation-value').textContent = `${e.target.value}°`; };
+$('#brush-mode').onchange = e => { endStroke(); brushMode = e.target.value; brushSettings(); };
+$('#stroke-height').oninput = e => { endStroke(); strokeHeight = +e.target.value / 1000; $('#stroke-height-value').textContent = `${e.target.value} m`; brushSettings(); };
+brushSettings();
 function refresh() {
   $('#undo').disabled = !history.cursor; $('#redo').disabled = history.cursor === history.entries.length;
   $('#history-count').textContent = `${history.entries.length.toLocaleString()} / 2,000`;
@@ -52,14 +62,17 @@ function afterHistory() { map.invalidate(); scene?.invalidate(); if (history.ent
 $('#undo').onclick = () => { endStroke(); if (history.undo()) afterHistory(); };
 $('#redo').onclick = () => { endStroke(); if (history.redo()) afterHistory(); };
 function cursor(point) { currentPoint = point; map.cursor = point && { ...point, radius }; map.needsDraw = true; scene?.cursor(point, radius); if (point) $('#coordinates').textContent = `X ${Math.round(point.x)} · Y ${Math.round(point.y)} · ${Math.round(world.sample(point.x, point.y) * 1000)} m`; }
-function paint(point, dt = 1) {
-  if (!point || !stroke) return;
+function activeTool() {
   let activeTool = modifiers.shift ? (tool === 'paint' || tool === 'erase' ? 'erase' : 'smooth') : tool;
   if (modifiers.alt) activeTool = activeTool === 'raise' ? 'lower' : activeTool === 'lower' ? 'raise' : activeTool;
-  dab(world, stroke, point.x, point.y, { tool: activeTool, radius, strength, rotation, mask, target: stroke.target, dt, biome });
+  return activeTool;
 }
-function startStroke(point) { if (!point || !world.inside(point.x, point.y)) return; const painting = tool === 'paint' || tool === 'erase'; if (painting && !world.biomesVisible) { toast('Show the Biomes layer before painting.'); return; } stroke = history.begin(modifiers.shift ? labels[painting ? 'erase' : 'smooth'] : tool === 'paint' ? `Paint ${BIOMES[biome].name.toLowerCase()}` : labels[tool]); stroke.target = world.sample(point.x, point.y); lastPoint = point; paint(point); }
-function endStroke() { if (stroke) { if (history.commit(stroke)) changed(); stroke = null; lastPoint = null; } pan = null; if (scene) scene.controls.enabled = true; }
+function paint(point, dt = 1) {
+  if (!point || !stroke) return;
+  dab(world, stroke, point.x, point.y, { tool: activeTool(), radius, strength, rotation, mask, target: stroke.target, dt, biome, mode: brushMode, strokeHeight });
+}
+function startStroke(point) { if (!point || !world.inside(point.x, point.y)) return; const painting = tool === 'paint' || tool === 'erase'; if (painting && !world.biomesVisible) { toast('Show the Biomes layer before painting.'); return; } const label = modifiers.shift ? labels[painting ? 'erase' : 'smooth'] : tool === 'paint' ? `Paint ${BIOMES[biome].name.toLowerCase()}` : labels[tool]; stroke = history.begin(`${label}${brushMode === 'blend' && ['raise', 'lower', 'stamp'].includes(activeTool()) ? ' · Blend' : ''}`); stroke.target = world.sample(point.x, point.y); strokePath = new StrokePath(point, Math.max(2, radius * .16)); lastTime = performance.now(); paint(point); }
+function endStroke() { if (stroke) { if (history.commit(stroke)) changed(); stroke = null; strokePath = null; } pan = null; if (scene) scene.controls.enabled = true; }
 function bindCanvas(canvas, pointFor, is3D = false) {
   canvas.addEventListener('contextmenu', e => e.preventDefault());
   canvas.addEventListener('pointerdown', e => {
@@ -78,11 +91,7 @@ function bindCanvas(canvas, pointFor, is3D = false) {
       pan.x = e.clientX; pan.y = e.clientY; return;
     }
     const p = pointFor(e); cursor(p);
-    if (stroke && p && lastPoint && tool !== 'stamp') {
-      const distance = Math.hypot(p.x - lastPoint.x, p.y - lastPoint.y), spacing = Math.max(2, radius * .16), steps = Math.ceil(distance / spacing);
-      for (let i = 1; i <= Math.min(steps, 160); i++) paint({ x: lastPoint.x + (p.x - lastPoint.x) * i / Math.min(steps, 160), y: lastPoint.y + (p.y - lastPoint.y) * i / Math.min(steps, 160) }, .65);
-      lastPoint = p;
-    }
+    if (stroke && p && strokePath && activeTool() !== 'stamp' && strokePath.move(p, point => paint(point, .65))) lastTime = performance.now();
   });
   canvas.addEventListener('pointerup', endStroke); canvas.addEventListener('pointercancel', endStroke); canvas.addEventListener('lostpointercapture', endStroke);
   canvas.addEventListener('pointerleave', () => { if (!stroke) cursor(null); });
@@ -125,7 +134,7 @@ async function loadBrushes() {
   for (const brush of brushes) { const button = document.createElement('button'); button.className = 'brush'; button.dataset.brush = brush.id; button.dataset.category = brush.category; button.title = brush.name; const img = document.createElement('img'); img.src = `/brushes/${brush.id}.png`; img.alt = ''; img.loading = 'lazy'; const label = document.createElement('span'); label.textContent = brush.name; button.append(img, label); $('#brush-grid').append(button); }
   let selection = 0;
   $('#brush-grid').onclick = async e => {
-    const button = e.target.closest('[data-brush]'); if (!button) return; const version = ++selection;
+    const button = e.target.closest('[data-brush]'); if (!button) return; endStroke(); const version = ++selection;
     try { let nextMask = null; const brush = brushes.find(b => b.id === button.dataset.brush); if (brush) { const res = await fetch(`/brushes/${brush.id}.bin`); if (!res.ok) throw new Error('Brush could not load'); nextMask = { size: brush.size, data: new Uint16Array(await res.arrayBuffer()) }; } if (version !== selection) return; mask = nextMask; $('#current-brush').textContent = brush?.name ?? 'Soft round'; document.querySelectorAll('[data-brush]').forEach(b => b.classList.toggle('active', b === button)); } catch (error) { toast(error.message); }
   };
   $('#brush-category').onchange = e => document.querySelectorAll('[data-brush]').forEach(b => { b.hidden = b.dataset.brush !== 'round' && e.target.value !== 'all' && b.dataset.category !== e.target.value; });
@@ -134,7 +143,7 @@ await loadBrushes().catch(e => toast(e.message));
 requestAnimationFrame(() => { fit(); refresh(); $('#status').textContent = 'Ready to sculpt'; });
 function frame(time) {
   requestAnimationFrame(frame);
-  if (stroke && currentPoint && tool !== 'stamp' && time - lastTime > 45) { paint(currentPoint, .7); lastTime = time; }
+  if (stroke && currentPoint && accumulatesWhileHeld(activeTool(), brushMode) && time - lastTime > 45) { paint(currentPoint, .7); lastTime = time; }
   if (world.dirty.size) { const keys = [...world.dirty]; world.dirty.clear(); map.invalidate(keys); scene?.invalidate(keys); }
   renderViews([['2D', map], ['3D', scene]], (name, error) => { console.error(`${name} view:`, error); $('#status').textContent = `${name} paused · use Reset views`; toast(`${name} view paused. Use Reset views to rebuild it; your work is retained.`); });
 }

@@ -141,8 +141,10 @@ export function resetWorld(world, history, preset = 'ocean') {
 }
 
 export function dab(world, stroke, cx, cy, options) {
-  const { radius, strength, tool, mask, rotation = 0, target = 0, dt = 1, biome = 0 } = options;
+  const { radius, strength, tool, mask, rotation = 0, target = 0, dt = 1, biome = 0, mode = 'additive', strokeHeight = .3 } = options;
   if (![cx, cy, radius, strength, rotation, target, dt].every(Number.isFinite) || radius <= 0) return;
+  const blending = mode === 'blend' && ['raise', 'lower', 'stamp'].includes(tool);
+  if (blending && (!stroke?.changes || !Number.isFinite(strokeHeight) || strokeHeight <= 0)) return;
   const b = world.bounds, cos = Math.cos(rotation), sin = Math.sin(rotation);
   const left = Math.max(b.minX, Math.floor(cx - radius)), right = Math.min(b.maxX - 1, Math.ceil(cx + radius));
   const top = Math.max(b.minY, Math.floor(cy - radius)), bottom = Math.min(b.maxY - 1, Math.ceil(cy + radius));
@@ -171,9 +173,16 @@ export function dab(world, stroke, cx, cy, options) {
     const current = world.get(x, y), amount = strength * weight * dt;
     if (tool === 'paint' || tool === 'erase') { if (current >= world.sea) world.paintBiome(x, y, tool === 'erase' ? -1 : biome, amount * .5, stroke); continue; }
     let value = current;
-    if (tool === 'raise' || tool === 'lower') value += amount * .055 * (tool === 'raise' ? 1 : -1);
+    if (blending) {
+      const tx = Math.floor(x / TILE), ty = Math.floor(y / TILE), index = (y - ty * TILE) * TILE + x - tx * TILE;
+      // Reuse the undo baseline: an overlapping dab can strengthen the brush
+      // profile, but never add a second layer during this stroke.
+      const original = stroke.changes.get(keyOf(tx, ty))?.get(index) ?? current;
+      const depth = clamp(strength, 0, 1) * weight * strokeHeight;
+      value = tool === 'lower' ? Math.min(current, original - depth) : Math.max(current, original + depth);
+    } else if (tool === 'raise' || tool === 'lower') value += amount * .055 * (tool === 'raise' ? 1 : -1);
     if (tool === 'flatten') value += (target - current) * Math.min(1, amount * .38);
-    if (tool === 'stamp') value = Math.max(current, target + weight * strength * .8);
+    if (tool === 'stamp' && !blending) value = Math.max(current, target + weight * strength * .8);
     if (tool === 'smooth') {
       const ix = x - left, iy = y - top;
       const sum = integral[(iy + 5) * stride + ix + 5] - integral[iy * stride + ix + 5] - integral[(iy + 5) * stride + ix] + integral[iy * stride + ix];

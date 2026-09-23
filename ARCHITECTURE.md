@@ -39,3 +39,9 @@ Biome paint uses sparse 128-square Uint8 tiles with ten channels per sample (160
 Reset uses one bulk patch entry with bounds/layer metadata. Applying it prunes empty reset tiles. Full resets and imports dispose old 3D meshes and clear raster caches; ordinary strokes keep incremental updates. The 3D preview now samples every two height samples, builds at most four meshes per frame, and computes shared-edge normals from the authoritative height field. Bounded 2048-square directional shadow maps cover the local camera neighborhood.
 
 The map defers fitting when its panel is hidden, retains a positive zoom, sizes from its container, and repairs invalid transforms. Canvas elements are taken out of intrinsic layout sizing to avoid resize feedback. Render errors are isolated per viewport; the animation frame is scheduled before drawing so a 2D exception cannot halt 3D or recovery. Reset views clears the paused state. WebGL context restoration rebuilds meshes.
+
+## Controlled brush buildup
+
+Blend reads original sample heights from the active stroke's existing undo map. Raise/Stamp take the maximum of the current height and original height plus masked depth; Lower takes the minimum with original height minus masked depth. Depth is stroke height times strength times falloff/mask weight. Repeated dabs therefore form a maximum envelope within one stroke instead of summing. No extra whole-world snapshot or persistent channel is needed; a new stroke deliberately starts a new layer. Blend changes are ordinary height patches, so undo, redo, and FMM2 files need no migration.
+
+`StrokePath` carries residual distance across pointer events, decoupling dab spacing from mouse report frequency. Extreme jumps are capped at 160 dabs. Pointer movement resets the idle buildup timer; Blend Raise/Lower and all Stamps skip idle dabs. Smoothing, flattening, and biome brushes still support holding in place. Brush mode and height are editing controls, not stored world data.

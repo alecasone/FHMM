@@ -55,3 +55,11 @@ The 3D view uses stronger directional sunlight, reduced ambient fill, terrain sh
 **Reset views** rebuilds both render caches and resets cameras without touching your world. **Reset world** offers empty ocean or starter islands. It resets extent, heights, paint, and sea level while retaining the name, and is recorded as one undoable operation. Its history obeys the same memory budget as other operations. New ocean world opens the same reset dialog.
 
 New saves use FMM version 2 and include biome weights and reset history. Existing version 1 worlds remain readable. Older app versions cannot open the new saves.
+
+## Controlled brush buildup
+
+**Blend** is the default buildup mode for Raise, Lower, and Stamp. Each drag applies one layer over the terrain that existed when the stroke began. Overlapping passes use the strongest brush contribution instead of adding more height, and holding still does not build a spike. Release and start another stroke to deliberately add another layer. This preserves the heightmap brush shape and existing terrain detail.
+
+**Stroke height** sets the layer depth at full strength; the note below shows the actual maximum at your current strength. The default 300 m height and 45% strength allow up to 135 m per stroke. Lower either control for subtle work. **Additive** restores continuous Raise/Lower buildup while dragging or holding; its Stamp behavior places a single heightmap relative to the starting height.
+
+Brush dabs are spaced by travel distance, so a high-frequency mouse no longer piles up extra terrain. Idle buildup stops while dragging. Smooth, Flatten, and biome painting keep their existing behavior. Both modes use the same undo/redo and save format.
