@@ -1,0 +1,12 @@
+{
+  "name": "fmm-terrain-studio",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "prepare-brushes": "node scripts/prepare-brushes.mjs"
+  },
+  "dependencies": { "three": "0.180.0", "pngjs": "7.0.0" }
+}

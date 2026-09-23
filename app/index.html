@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FMM · Terrain Studio</title>
+  <meta name="description" content="A local fantasy world painter with heightmap brushes, live 2D and 3D terrain, and expandable worlds.">
+  <link rel="icon" href="/favicon.svg"><link rel="stylesheet" href="/style.css">
+  <script type="importmap">{"imports":{"three":"/vendor/build/three.module.js","three/addons/":"/vendor/examples/jsm/"}}</script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><svg viewBox="0 0 36 36" aria-hidden="true"><path d="M3 28 14 8l7 12 4-7 9 15H3Z"/><path d="m10 16 4 4 4-4M21 20l4 4 4-4"/></svg><div>FMM<span>TERRAIN STUDIO</span></div></div>
+  <div class="project"><input id="world-name" aria-label="World name" value="The Unwritten Isles" maxlength="70"><span id="save-status">Local workspace</span></div>
+  <div class="top-actions"><button id="open" title="Open a saved world">Open</button><button id="save" class="primary" title="Save world and history to a file · Ctrl+S">Save world <span>↗</span></button><button id="help" class="icon-button" aria-label="Controls and shortcuts">?</button></div>
+</header>
+<div class="workspace">
+<aside class="left-sidebar">
+  <section class="tool-section"><div class="section-heading">SCULPT <span>01</span></div>
+    <div class="tools" role="group" aria-label="Terrain tools">
+      <button data-tool="raise" class="active" title="Raise terrain · R"><span>↟</span>Raise<kbd>R</kbd></button>
+      <button data-tool="lower" title="Lower terrain · L"><span>↡</span>Lower<kbd>L</kbd></button>
+      <button data-tool="flatten" title="Flatten to height sampled at the start of each stroke · F"><span>═</span>Flatten<kbd>F</kbd></button>
+      <button data-tool="smooth" title="Smooth terrain · S"><span>≈</span>Smooth<kbd>S</kbd></button>
+      <button data-tool="stamp" title="Place one heightmap stamp · T"><span>♧</span>Stamp<kbd>T</kbd></button>
+      <button data-tool="pan" title="Move the view · H"><span>✥</span>Pan<kbd>H</kbd></button>
+    </div>
+  </section>
+  <section class="settings">
+    <label for="radius">Brush size <output id="radius-value">112</output></label><input id="radius" type="range" min="4" max="240" value="56">
+    <label for="strength">Strength <output id="strength-value">45%</output></label><input id="strength" type="range" min="1" max="100" value="45">
+    <label for="rotation">Rotation <output id="rotation-value">0°</output></label><input id="rotation" type="range" min="0" max="360" value="0">
+    <div class="brush-current"><span id="current-brush">Soft round</span><span class="subtle">active brush</span></div>
+  </section>
+  <section class="brush-section"><div class="section-heading">BRUSH LIBRARY <span id="brush-count">44 + 1</span></div>
+    <label class="sr-only" for="brush-category">Brush category</label><select id="brush-category"><option value="all">All terrain brushes</option></select>
+    <div id="brush-grid" class="brush-grid"><button class="brush active" data-brush="round"><span class="round-preview"></span><span>Soft round</span></button></div>
+  </section>
+  <div class="sidebar-note"><span class="accent">◈</span> A world, one stroke at a time.</div>
+</aside>
+<main>
+  <div class="view-toolbar"><div class="view-tabs" role="group" aria-label="Viewport layout"><button data-layout="split" class="active">Split view</button><button data-layout="map">2D map</button><button data-layout="scene">3D terrain</button></div><div class="view-options"><label title="Show elevation contour lines"><input id="contours" type="checkbox" checked>Contours</label><button id="fit" title="Fit world to view · Home">Fit world ⤢</button></div></div>
+  <div class="viewports" data-layout="split">
+    <section class="viewport map-viewport"><div class="viewport-heading"><span><i class="view-dot"></i>MAP VIEW <small>2D</small></span><span id="map-zoom">100%</span></div><canvas id="map" aria-label="2D terrain painting canvas"></canvas><div class="map-compass">N<span>↑</span></div><div class="view-bottom"><span id="map-scale">256 samples</span><span>Scroll to zoom · Space to pan</span></div><div class="scale-line"></div></section>
+    <section class="viewport scene-viewport"><div class="viewport-heading"><span><i class="view-dot gold"></i>TERRAIN VIEW <small>3D</small></span><span class="live">LIVE</span></div><div id="scene" aria-label="3D terrain painting viewport"></div><div class="scene-error" hidden>3D requires WebGL 2. The 2D painter is still available.</div><div class="view-bottom"><span>Perspective</span><span>Right-drag to orbit · Wheel to zoom</span></div><button id="focus" class="focus-button" title="Center the 3D camera on the 2D map center">Focus here ⊕</button></section>
+  </div>
+  <div class="canvas-bottom"><span><span class="keycap">Shift</span> Smooth temporarily</span><span><span class="keycap">Alt</span> Reverse raise / lower</span><span id="stroke-hint">Click and drag to raise terrain</span></div>
+</main>
+<aside class="right-sidebar">
+  <section><div class="section-heading">WORLD LAYERS <span>02</span></div><div class="layer active"><span class="layer-icon">▧</span><div>Terrain<span>Height field</span></div><span class="layer-badge">EDITING</span></div><div class="layer"><span class="layer-icon ocean-icon">≈</span><div>Ocean<span>Global water plane</span></div><input type="checkbox" id="ocean" aria-label="Show ocean layer" checked></div>
+    <div class="sea-control"><label for="sea">Sea level <output id="sea-value">0 m</output></label><input type="range" id="sea" min="-300" max="700" value="0"></div>
+    <label class="exaggeration" for="relief">3D relief <select id="relief"><option value="100">Natural</option><option value="180" selected>Enhanced</option><option value="300">Dramatic</option></select></label>
+  </section>
+  <section class="world-section"><div class="section-heading">WORLD EXTENT <span>↗</span></div><div class="extent"><strong id="world-size">1,024 × 1,024</strong><span>height samples · expandable</span></div><div class="expand-controls"><select id="expand-direction" aria-label="Expansion direction"><option value="all">All borders</option><option value="north">North border</option><option value="east">East border</option><option value="south">South border</option><option value="west">West border</option></select><button id="expand" title="Extend selected borders by 256 samples">+ Expand</button></div><div class="world-actions"><button id="blank">New ocean world</button><button id="export">Export heightmap</button></div></section>
+  <section class="history-section"><div class="section-heading">HISTORY <span id="history-count">0 / 2,000</span></div><div class="undo-redo"><button id="undo" disabled title="Undo · Ctrl+Z">↶ Undo</button><button id="redo" disabled title="Redo · Ctrl+Y">↷ Redo</button></div><div id="history-list" class="history-list"><button class="history-entry current" data-cursor="0"><span>◈</span><div>World created<small>Starting landscape</small></div><span>●</span></button></div><div id="history-memory" class="history-memory">0 MB of 256 MB history budget</div></section>
+</aside>
+</div>
+<footer><span><i class="view-dot"></i><span id="status">Preparing your world…</span></span><span id="coordinates">X 0 · Y 0</span><span id="world-stats">64 terrain tiles</span><span>FMM <span class="version">v0.1</span></span></footer>
+<div id="toast" role="status" hidden></div>
+<input id="file-input" type="file" accept=".fmm" hidden>
+<dialog id="help-dialog"><form method="dialog"><button class="dialog-close" aria-label="Close help">×</button></form><span class="eyebrow">FIELD NOTES</span><h1>Your world starts here.</h1><p>Paint in either view. The map and terrain update together.</p><dl><dt>Raise / Lower</dt><dd>Hold and drag to build or carve terrain.</dd><dt>Flatten</dt><dd>Uses the height under the first click as its target.</dd><dt>Smooth</dt><dd>Soften ridges. Hold Shift with any brush.</dd><dt>Stamp</dt><dd>Place a single peak with your selected heightmap.</dd><dt>Move around</dt><dd>Space + drag pans. Right-drag orbits in 3D. Scroll zooms.</dd><dt>Brush size</dt><dd>[ and ] change the radius.</dd><dt>History</dt><dd>Ctrl+Z / Ctrl+Y undo and redo. Click a history row to travel back.</dd><dt>Save</dt><dd>Ctrl+S saves a .fmm file including retained history. A local recovery copy is also saved in this browser.</dd></dl><p class="muted">Heights are displayed at 1,000 m per height unit. The world starts with 1,024 × 1,024 samples; each expansion adds 256 samples to the selected borders.</p></dialog>
+<script type="module" src="/main.js"></script>
+</body></html>
