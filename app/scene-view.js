@@ -2,15 +2,20 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TILE, keyOf, terrainColor, clamp } from './world.js';
 import { BIOME_COUNT, surfaceColor } from './biomes.js';
+import { RiverView } from './river-view.js';
+import { radians, sunDirection, wrapDegrees } from './view-math.js';
+import { DEFAULT_RENDER_DISTANCE, normalizeRenderDistance, terrainWindow } from './terrain-window.js';
 export class SceneView {
   constructor(container, world) {
     this.world = world; this.container = container; this.relief = 180; this.meshes = new Map(); this.pending = new Set(); this.needsDraw = true; this.sunAzimuth = 315; this.sunElevation = 32; this.step = 2;
+    this.renderDistance = DEFAULT_RENDER_DISTANCE;
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false }); this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75)); this.renderer.setClearColor('#12232e'); this.renderer.outputColorSpace = THREE.SRGBColorSpace; container.appendChild(this.renderer.domElement);
     this.renderer.shadowMap.enabled = true; this.renderer.shadowMap.type = THREE.PCFShadowMap;
+    this.renderer.shadowMap.autoUpdate = false; this.renderer.shadowMap.needsUpdate = true;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping; this.renderer.toneMappingExposure = 1.05;
     this.renderer.domElement.addEventListener('webglcontextlost', event => { event.preventDefault(); this.contextLost = true; container.dispatchEvent(new CustomEvent('view-error', { detail: '3D graphics context lost. The map is still available.' })); });
     this.renderer.domElement.addEventListener('webglcontextrestored', () => { this.contextLost = false; this.reset(); });
-    this.scene = new THREE.Scene(); this.scene.fog = new THREE.Fog('#12232e', 1800, 4200);
+    this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(40, 1, 1, 15000); this.camera.position.set(850, 950, 1000);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement); this.controls.target.set(0, 0, 0); this.controls.enableDamping = false; this.controls.minDistance = 60; this.controls.maxDistance = 4500; this.controls.maxPolarAngle = Math.PI * .47; this.controls.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE }; this.controls.touches = { ONE: null, TWO: THREE.TOUCH.DOLLY_PAN }; this.controls.addEventListener('change', () => { this.needsDraw = true; }); this.controls.update();
     this.scene.add(new THREE.HemisphereLight('#bbd6ee', '#56503d', .48));
@@ -25,14 +30,20 @@ export class SceneView {
     this.outline = new THREE.LineLoop(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: '#8bb2ad', transparent: true, opacity: .28 })); this.scene.add(this.outline);
     const ringPositions = new Float32Array(97 * 3); this.ring = new THREE.Line(new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(ringPositions, 3)), new THREE.LineBasicMaterial({ color: '#edffc0', depthTest: false, transparent: true, opacity: .95 })); this.ring.frustumCulled = false; this.ring.renderOrder = 10; this.ring.visible = false; this.scene.add(this.ring);
     this.ray = new THREE.Raycaster(); this.pointer = new THREE.Vector2(); this.plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    this.rivers = new RiverView(this.scene, world);
     this.observer = new ResizeObserver(() => this.resize()); this.observer.observe(container); this.resize(); this.syncBounds();
   }
   resize() { const w = this.container.clientWidth, h = this.container.clientHeight; if (!w || !h) return; this.renderer.setSize(w, h, false); this.camera.aspect = w / h; this.camera.updateProjectionMatrix(); this.needsDraw = true; }
+  setRenderDistance(value) { this.renderDistance = normalizeRenderDistance(value); this.needsDraw = true; }
   updateSun() {
-    const azimuth = this.sunAzimuth * Math.PI / 180, elevation = this.sunElevation * Math.PI / 180, t = this.controls.target;
-    this.sun.target.position.set(t.x, 0, t.z); this.sun.position.set(t.x + Math.sin(azimuth) * Math.cos(elevation) * 1800, Math.sin(elevation) * 1800, t.z - Math.cos(azimuth) * Math.cos(elevation) * 1800); this.needsDraw = true;
+    const direction = sunDirection(this.sunAzimuth, this.sunElevation), t = this.controls.target;
+    this.sun.target.position.set(t.x, 0, t.z); this.sun.position.set(t.x + direction.x * 1800, direction.y * 1800, t.z + direction.z * 1800); this.needsDraw = true;
+    this.renderer.shadowMap.needsUpdate = true;
   }
-  reset() { this.failed = false; for (const mesh of this.meshes.values()) { this.scene.remove(mesh); mesh.geometry.dispose(); } this.meshes.clear(); this.pending.clear(); this.cursor(null, 1); this.resize(); this.syncBounds(); }
+  getRotation() { const t = this.controls.target; return wrapDegrees(Math.atan2(this.camera.position.x - t.x, -(this.camera.position.z - t.z)) * 180 / Math.PI); }
+  setRotation(degrees) { const t = this.controls.target, d = Math.hypot(this.camera.position.x - t.x, this.camera.position.z - t.z), a = radians(degrees); this.camera.position.x = t.x + Math.sin(a) * d; this.camera.position.z = t.z - Math.cos(a) * d; this.controls.update(); this.needsDraw = true; }
+  pan(dx, dy) { const a = radians(this.getRotation()), scale = this.camera.position.distanceTo(this.controls.target) / 650; this.focus(this.controls.target.x + (Math.cos(a) * dx - Math.sin(a) * dy) * scale, this.controls.target.z + (Math.sin(a) * dx + Math.cos(a) * dy) * scale); }
+  reset() { this.failed = false; for (const mesh of this.meshes.values()) { this.scene.remove(mesh); mesh.geometry.dispose(); } this.meshes.clear(); this.pending.clear(); this.renderer.shadowMap.needsUpdate = true; this.cursor(null, 1); this.resize(); this.syncBounds(); }
   syncBounds() {
     const b = this.world.bounds, signature = [b.minX, b.minY, b.maxX, b.maxY, this.world.sea, this.world.ocean, this.relief].join(',');
     if (this.boundsSignature === signature) return; this.boundsSignature = signature;
@@ -44,7 +55,7 @@ export class SceneView {
   focus(x, y, fit = false) {
     const old = this.controls.target.clone(), b = this.world.bounds;
     this.controls.target.set(x, 0, y);
-    if (fit) { const size = Math.min(1536, Math.max(b.maxX - b.minX, b.maxY - b.minY)); this.camera.position.set(x + size * .72, size * .72, y + size * .87); }
+    if (fit) { const size = Math.min(1536, Math.max(b.maxX - b.minX, b.maxY - b.minY)), a = Math.atan2(this.camera.position.x - old.x, -(this.camera.position.z - old.z)); this.camera.position.set(x + Math.sin(a) * size * 1.13, size * .72, y - Math.cos(a) * size * 1.13); }
     else this.camera.position.add(this.controls.target.clone().sub(old));
     this.controls.update(); this.needsDraw = true;
   }
@@ -67,6 +78,7 @@ export class SceneView {
       const nx = (left - right) * this.relief, nz = (up - down) * this.relief, length = Math.hypot(nx, 2, nz); normals.setXYZ(i, nx / length, 2 / length, nz / length);
     }
     pos.needsUpdate = true; col.needsUpdate = true; normals.needsUpdate = true; mesh.geometry.computeBoundingSphere(); this.pending.delete(key);
+    this.renderer.shadowMap.needsUpdate = true;
   }
   point(event) {
     const r = this.renderer.domElement.getBoundingClientRect(); if (!r.width || !r.height || this.contextLost) return null; this.pointer.set((event.clientX - r.left) / r.width * 2 - 1, -(event.clientY - r.top) / r.height * 2 + 1); this.camera.updateMatrixWorld(); this.scene.updateMatrixWorld(); this.ray.setFromCamera(this.pointer, this.camera);
@@ -83,12 +95,25 @@ export class SceneView {
     if (!this.container.clientWidth || !this.container.clientHeight || this.contextLost) return;
     const b = this.world.bounds;
     const tx = Math.floor(clamp(this.controls.target.x, b.minX, b.maxX - 1) / TILE), ty = Math.floor(clamp(this.controls.target.z, b.minY, b.maxY - 1) / TILE);
-    const wanted = new Set(); let updated = 0;
-    for (let y = Math.max(b.minY / TILE, ty - 6); y < Math.min(b.maxY / TILE, ty + 6); y++) for (let x = Math.max(b.minX / TILE, tx - 6); x < Math.min(b.maxX / TILE, tx + 6); x++) {
-      const key = keyOf(x, y); wanted.add(key);
-      if ((!this.meshes.has(key) || this.pending.has(key)) && updated < 4) { this.build(key, x, y); updated++; this.needsDraw = true; }
+    const signature = [b.minX, b.minY, b.maxX, b.maxY, tx, ty, this.renderDistance].join(',');
+    if (signature !== this.windowSignature) {
+      this.windowSignature = signature;
+      this.renderWindow = terrainWindow(b, this.controls.target.x, this.controls.target.z, this.renderDistance);
     }
-    for (const [key, mesh] of this.meshes) if (!wanted.has(key)) { this.scene.remove(mesh); mesh.geometry.dispose(); this.meshes.delete(key); this.pending.delete(key); this.needsDraw = true; }
+    const { tiles, keys, bounds } = this.renderWindow;
+    // Release first, including cached shadows, so shrinking the slider frees GPU memory immediately.
+    for (const [key, mesh] of this.meshes) if (!keys.has(key)) {
+      this.scene.remove(mesh); mesh.geometry.dispose(); this.meshes.delete(key); this.pending.delete(key);
+      this.renderer.shadowMap.needsUpdate = true; this.needsDraw = true;
+    }
+    // Visible edits take precedence over streaming more terrain. Load the nearest tiles first.
+    const jobs = [...tiles.filter(tile => this.meshes.has(tile.key) && this.pending.has(tile.key)), ...tiles.filter(tile => !this.meshes.has(tile.key))];
+    const started = performance.now(); let updated = 0;
+    for (const { key, x, y } of jobs) {
+      if (updated >= 4 || (updated && performance.now() - started >= 8)) break;
+      this.build(key, x, y); updated++; this.needsDraw = true;
+    }
+    if (this.rivers.update(this.relief, bounds)) this.needsDraw = true;
     if (this.needsDraw) { this.renderer.render(this.scene, this.camera); this.needsDraw = false; }
   }
 }

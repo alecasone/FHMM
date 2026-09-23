@@ -3,11 +3,13 @@ export const TILE = 128;
 export const FLOOR = -.18;
 export const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 export const keyOf = (x, y) => `${x},${y}`;
+export const metadataBytes = (before, after) => Math.max(512, (JSON.stringify(before).length + JSON.stringify(after).length) * 2);
 
 export class World {
   constructor() {
     this.tiles = new Map();
     this.biomes = new Map(); this.biomesVisible = true;
+    this.rivers = []; this.riversVisible = true;
     this.bounds = { minX: -512, minY: -512, maxX: 512, maxY: 512 };
     this.sea = 0; this.ocean = true; this.name = 'The Unwritten Isles';
     this.dirty = new Set(); this.revision = 0;
@@ -94,10 +96,12 @@ export class History {
       }
       if (indices.length) { patches.push({ channel: 'biomes', key, indices: Uint16Array.from(indices), before: Uint8Array.from(before), after: Uint8Array.from(after) }); bytes += indices.length * (2 + 2 * BIOME_COUNT); }
     }
-    if (patches.length) this.push({ label: stroke.label, patches, bytes, time: Date.now() });
-    return patches.length > 0;
+    const riverMeta = stroke.riversBefore ? { before: { rivers: stroke.riversBefore }, after: { rivers: structuredClone(this.world.rivers) } } : {};
+    if (stroke.riversBefore) bytes += metadataBytes(riverMeta.before, riverMeta.after);
+    if (patches.length || stroke.riversBefore) this.push({ label: stroke.label, patches, bytes, time: Date.now(), ...riverMeta });
+    return patches.length > 0 || !!stroke.riversBefore;
   }
-  metadata(label, before, after) { if (JSON.stringify(before) !== JSON.stringify(after)) this.push({ label, before, after, bytes: 512, time: Date.now() }); }
+  metadata(label, before, after) { if (JSON.stringify(before) !== JSON.stringify(after)) this.push({ label, before, after, bytes: metadataBytes(before, after), time: Date.now() }); }
   push(entry) {
     for (const removed of this.entries.splice(this.cursor)) this.bytes -= removed.bytes;
     this.entries.push(entry); this.bytes += entry.bytes; this.cursor++;
@@ -122,8 +126,9 @@ export class History {
 
 export function resetWorld(world, history, preset = 'ocean') {
   const next = new World(); if (preset === 'islands') seedWorld(next);
-  const metadata = w => ({ bounds: structuredClone(w.bounds), sea: w.sea, ocean: w.ocean, biomesVisible: w.biomesVisible });
+  const metadata = w => ({ bounds: structuredClone(w.bounds), sea: w.sea, ocean: w.ocean, biomesVisible: w.biomesVisible, rivers: structuredClone(w.rivers), riversVisible: w.riversVisible });
   const entry = { label: preset === 'islands' ? 'Reset to starter islands' : 'Reset to empty ocean', reset: true, before: metadata(world), after: metadata(next), patches: [], bytes: 512, time: Date.now() };
+  entry.bytes = metadataBytes(entry.before, entry.after);
   for (const channel of ['height', 'biomes']) {
     const current = channel === 'height' ? world.tiles : world.biomes, target = channel === 'height' ? next.tiles : next.biomes;
     const stride = channel === 'height' ? 1 : BIOME_COUNT, Type = stride === 1 ? Float32Array : Uint8Array, baseline = stride === 1 ? Math.fround(FLOOR) : 0;

@@ -50,7 +50,7 @@ Switch the left panel to **Biomes** or press **B**. Choose grassland, forest, ra
 
 Unpainted terrain is colored by elevation, slope, and deterministic moisture/surface variation. Biomes blend over that base rather than replacing terrain heights. Steep slopes expose rock, snow favors shelves, coasts become sandy, and high elevations transition into alpine terrain and snow. These are procedural visual approximations, not a climate or ecosystem simulation.
 
-The 3D view uses stronger directional sunlight, reduced ambient fill, terrain shadows, and finer two-sample mesh spacing. Open **Sunlight & shadows** to change sun height and direction or disable shadows on slower hardware. Lighting and relief are view settings; biome paint is saved with the world.
+The 3D view uses stronger directional sunlight, reduced ambient fill, terrain shadows, and finer two-sample mesh spacing. Open **Sun & shadows** to change sun height and direction or disable shadows on slower hardware. Lighting and relief are view settings; biome paint is saved with the world.
 
 **Reset views** rebuilds both render caches and resets cameras without touching your world. **Reset world** offers empty ocean or starter islands. It resets extent, heights, paint, and sea level while retaining the name, and is recorded as one undoable operation. Its history obeys the same memory budget as other operations. New ocean world opens the same reset dialog.
 
@@ -63,3 +63,19 @@ New saves use FMM version 2 and include biome weights and reset history. Existin
 **Stroke height** sets the layer depth at full strength; the note below shows the actual maximum at your current strength. The default 300 m height and 45% strength allow up to 135 m per stroke. Lower either control for subtle work. **Additive** restores continuous Raise/Lower buildup while dragging or holding; its Stamp behavior places a single heightmap relative to the starting height.
 
 Brush dabs are spaced by travel distance, so a high-frequency mouse no longer piles up extra terrain. Idle buildup stops while dragging. Smooth, Flatten, and biome painting keep their existing behavior. Both modes use the same undo/redo and save format.
+
+## Rivers and view angles (v0.3)
+
+Select **River**, choose width and channel depth, then sketch from a source toward an outlet in either view. The dashed preview is your guide; release to create the river. The tool smooths the route, optionally follows nearby low ground, chooses the downhill direction, cuts the bed through intervening ridges, and paints rocky beds and wetland banks. Water has animated flow in both views. Each river is one undoable operation, including its terrain and colors.
+
+This is guided channel carving with a downhill water profile, not a rainfall, sediment, or fluid-volume simulation. Sculpting above the stored water surface blocks its visible flow. **Recarve channels** restores the saved paths after later terrain edits; that operation is undoable too. **River water** toggles the water surface independently of Ocean; carved terrain and bank paint remain. Rivers stop at the sea when they reach it. For a long river, draw it in sections; one stroke is limited to roughly 8,192 samples. The current feature budget is 128 rivers and 32,768 path points.
+
+Open **Sun & shadows** and **View rotation** in the right sidebar. **Sun azimuth** (0° north, 90° east) and **Sun height** light both the 2D map and 3D terrain. **2D rotation** turns the map and compass while preserving accurate brush picking, panning, and zooming. **3D rotation** orbits the camera; right-drag orbiting updates its slider. **Reset rotations** restores the default angles. These are view settings, not changes to terrain. Distance fog has been removed from 3D.
+
+New saves use **FMM3** to preserve rivers, layer visibility, and river undo/redo. FMM1 and FMM2 worlds still open. Older versions of the app cannot open FMM3 saves.
+
+## Render distance and collapsible panels
+
+**3D view → Render distance** changes the terrain radius around the camera focus, from 256 to 1,536 samples in 128-sample steps (default 768). Larger settings show farther across expanded worlds and use more graphics memory. Smaller settings suit close-up painting. Terrain loads progressively, nearest first; current edits take priority. Panning or **Focus here** moves the region. The ocean remains world-wide, and distance fog stays disabled. This changes the preview only, with full-resolution terrain preserved.
+
+Click a sidebar section heading to open or close it, or use **Collapse all / Expand all** independently on either sidebar. Brush size and strength stay together; **Buildup & brush rotation** contains the advanced brush controls. Lighting, view rotation, layers, world expansion/export, and history each have their own section. Undo/Redo remain at the top of the right sidebar while you scroll. Switching tools opens the relevant brush settings. Panel choices and render distance are remembered in this browser, separately from world saves and undo history.

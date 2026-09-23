@@ -4,6 +4,8 @@ import { renderViews } from './render-loop.js';
 import { StrokePath, accumulatesWhileHeld } from './brush-stroke.js';
 import { MapView } from './map-view.js';
 import { SceneView } from './scene-view.js';
+import { addRiver, carveRiver } from './rivers.js';
+import { initWorkspaceUI } from './workspace-ui.js';
 
 const $ = s => document.querySelector(s);
 const world = new World(); seedWorld(world);
@@ -13,10 +15,13 @@ let scene;
 try { scene = new SceneView($('#scene'), world); } catch (error) { console.error(error); $('.scene-error').hidden = false; }
 let tool = 'raise', biome = 0, radius = 56, strength = .45, rotation = 0, brushMode = 'blend', strokeHeight = .3, mask = null, stroke = null, strokePath = null, currentPoint = null, space = false, pan = null;
 let modifiers = { shift: false, alt: false }, lastTime = 0, toastTimer;
-const labels = { raise: 'Raise terrain', lower: 'Lower terrain', flatten: 'Flatten terrain', smooth: 'Smooth terrain', stamp: 'Stamp terrain', pan: 'Pan view', paint: 'Paint biome', erase: 'Restore natural color' };
+let riverGuide = null, riverWidth = 18, riverDepth = .03, riverNatural = true;
+const labels = { raise: 'Raise terrain', lower: 'Lower terrain', flatten: 'Flatten terrain', smooth: 'Smooth terrain', stamp: 'Stamp terrain', pan: 'Pan view', paint: 'Paint biome', erase: 'Restore natural color', river: 'Carve river' };
 function toast(message) { $('#toast').textContent = message; $('#toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').hidden = true, 3500); }
 function brushSettings() {
   const sculpt = ['raise', 'lower', 'stamp'].includes(tool), blend = brushMode === 'blend';
+  $('#river-settings').hidden = tool !== 'river'; $('#standard-settings').hidden = tool === 'river';
+  $('.brush-section').hidden = tool === 'river'; $('.brush-current').hidden = tool === 'river'; $('.canvas-bottom').classList.toggle('river-mode', tool === 'river');
   $('#buildup-settings').hidden = !sculpt; $('#stroke-height-control').hidden = !blend;
   $('#buildup-note').textContent = blend ? `Up to ${Math.round(strokeHeight * strength * 1000)} m per stroke at this strength. Overlap stays even; release to build another layer.` : tool === 'stamp' ? 'Each click places one heightmap from the sampled height. Blend applies a gentler layer.' : 'Height keeps building as you drag or hold. Use Blend for controlled layers.';
 }
@@ -26,9 +31,10 @@ function selectTool(next) {
   $('#modifier-hint').textContent = painting ? 'Erase paint temporarily' : 'Smooth temporarily';
   document.querySelectorAll('[data-mode]').forEach(b => b.classList.toggle('active', b.dataset.mode === (painting ? 'paint' : 'sculpt')));
   document.querySelectorAll('[data-tool]').forEach(b => b.classList.toggle('active', b.dataset.tool === tool));
-  $('#stroke-hint').textContent = tool === 'paint' ? `Paint ${BIOMES[biome].name.toLowerCase()} · Shift to erase` : tool === 'erase' ? 'Remove biome paint to restore natural coloring' : tool === 'pan' ? 'Drag to move the view' : tool === 'stamp' ? 'Click to place a heightmap stamp' : `Click and drag to ${tool} terrain`;
+  $('#stroke-hint').textContent = tool === 'river' ? 'Sketch from source to outlet · release to carve' : tool === 'paint' ? `Paint ${BIOMES[biome].name.toLowerCase()} · Shift to erase` : tool === 'erase' ? 'Remove biome paint to restore natural coloring' : tool === 'pan' ? 'Drag to move the view' : tool === 'stamp' ? 'Click to place a heightmap stamp' : `Click and drag to ${tool} terrain`;
   $('#map').style.cursor = tool === 'pan' ? 'grab' : 'crosshair';
   brushSettings();
+  $('#panel-brush').open = true;
 }
 document.querySelectorAll('[data-tool]').forEach(b => b.onclick = () => selectTool(b.dataset.tool));
 document.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => selectTool(b.dataset.mode === 'paint' ? 'paint' : 'raise'));
@@ -39,6 +45,10 @@ $('#rotation').oninput = e => { endStroke(); rotation = +e.target.value / 180 * 
 $('#brush-mode').onchange = e => { endStroke(); brushMode = e.target.value; brushSettings(); };
 $('#stroke-height').oninput = e => { endStroke(); strokeHeight = +e.target.value / 1000; $('#stroke-height-value').textContent = `${e.target.value} m`; brushSettings(); };
 brushSettings();
+$('#river-width').oninput = e => { endStroke(); riverWidth = +e.target.value; $('#river-width-value').textContent = `${riverWidth} samples`; };
+$('#river-depth').oninput = e => { endStroke(); riverDepth = +e.target.value / 1000; $('#river-depth-value').textContent = `${e.target.value} m`; };
+$('#river-natural').onchange = e => { endStroke(); riverNatural = e.target.checked; };
+$('#recarve-rivers').onclick = () => { endStroke(); if (!world.rivers.length) return; const edit = history.begin('Recarve river channels'); for (const river of world.rivers) carveRiver(world, edit, river); if (history.commit(edit)) changed(); toast('River channels recarved. Undo restores your previous terrain.'); };
 function refresh() {
   $('#undo').disabled = !history.cursor; $('#redo').disabled = history.cursor === history.entries.length;
   $('#history-count').textContent = `${history.entries.length.toLocaleString()} / 2,000`;
@@ -50,29 +60,56 @@ function refresh() {
   else row(0, 'Go to oldest retained state', 'Jump to the beginning of history');
   for (let i = first; i < last; i++) row(i + 1, history.entries[i].label, `Step ${(i + 1 + history.trimmed).toLocaleString()}`);
   if (last < history.entries.length) row(history.entries.length, 'Go to latest state', `${history.entries.length - last} more steps`);
-  const selectedRow = list.querySelector('.current');
-  if (selectedRow) list.scrollTop = Math.max(0, selectedRow.offsetTop - list.offsetTop - list.clientHeight + selectedRow.offsetHeight);
+  revealHistoryCursor();
   const b = world.bounds; $('#world-size').textContent = `${(b.maxX - b.minX).toLocaleString()} × ${(b.maxY - b.minY).toLocaleString()}`;
   $('#world-stats').textContent = `${world.tiles.size} terrain tiles · ${((world.tiles.size * 4 + world.biomes.size * BIOME_COUNT) * TILE * TILE / 1048576).toFixed(1)} MB`;
   $('#sea').value = Math.round(world.sea * 1000); $('#sea-value').textContent = `${Math.round(world.sea * 1000)} m`; $('#ocean').checked = world.ocean; $('#world-name').value = world.name;
   $('#biomes-visible').checked = world.biomesVisible;
+  $('#rivers-visible').checked = world.riversVisible; $('#river-count').textContent = `${world.rivers.length} ${world.rivers.length === 1 ? 'river' : 'rivers'}`; $('#recarve-rivers').disabled = !world.rivers.length;
 }
+function revealHistoryCursor() {
+  const list = $('#history-list'), selectedRow = list.querySelector('.current');
+  if (selectedRow && $('#panel-history').open) list.scrollTop = Math.max(0, selectedRow.offsetTop - list.offsetTop - list.clientHeight + selectedRow.offsetHeight);
+}
+$('#panel-history').addEventListener('toggle', revealHistoryCursor);
 function changed() { $('#save-status').textContent = 'Unsaved changes'; refresh(); window.dispatchEvent(new Event('world-changed')); }
 function afterHistory() { map.invalidate(); scene?.invalidate(); if (history.entries[history.cursor]?.reset || history.entries[history.cursor - 1]?.reset) resetViews(false); changed(); }
 $('#undo').onclick = () => { endStroke(); if (history.undo()) afterHistory(); };
 $('#redo').onclick = () => { endStroke(); if (history.redo()) afterHistory(); };
-function cursor(point) { currentPoint = point; map.cursor = point && { ...point, radius }; map.needsDraw = true; scene?.cursor(point, radius); if (point) $('#coordinates').textContent = `X ${Math.round(point.x)} · Y ${Math.round(point.y)} · ${Math.round(world.sample(point.x, point.y) * 1000)} m`; }
+function cursor(point) { const size = tool === 'river' ? riverWidth / 2 : radius; currentPoint = point; map.cursor = point && { ...point, radius: size }; map.needsDraw = true; scene?.cursor(point, size); if (point) $('#coordinates').textContent = `X ${Math.round(point.x)} · Y ${Math.round(point.y)} · ${Math.round(world.sample(point.x, point.y) * 1000)} m`; }
 function activeTool() {
+  if (tool === 'river') return 'river';
   let activeTool = modifiers.shift ? (tool === 'paint' || tool === 'erase' ? 'erase' : 'smooth') : tool;
   if (modifiers.alt) activeTool = activeTool === 'raise' ? 'lower' : activeTool === 'lower' ? 'raise' : activeTool;
   return activeTool;
 }
 function paint(point, dt = 1) {
   if (!point || !stroke) return;
+  if (riverGuide) { if (world.inside(point.x, point.y) && riverGuide.length < 4096 && Math.hypot(point.x - riverGuide.at(-1).x, point.y - riverGuide.at(-1).y) > .5) riverGuide.push({ ...point }); return; }
   dab(world, stroke, point.x, point.y, { tool: activeTool(), radius, strength, rotation, mask, target: stroke.target, dt, biome, mode: brushMode, strokeHeight });
 }
-function startStroke(point) { if (!point || !world.inside(point.x, point.y)) return; const painting = tool === 'paint' || tool === 'erase'; if (painting && !world.biomesVisible) { toast('Show the Biomes layer before painting.'); return; } const label = modifiers.shift ? labels[painting ? 'erase' : 'smooth'] : tool === 'paint' ? `Paint ${BIOMES[biome].name.toLowerCase()}` : labels[tool]; stroke = history.begin(`${label}${brushMode === 'blend' && ['raise', 'lower', 'stamp'].includes(activeTool()) ? ' · Blend' : ''}`); stroke.target = world.sample(point.x, point.y); strokePath = new StrokePath(point, Math.max(2, radius * .16)); lastTime = performance.now(); paint(point); }
-function endStroke() { if (stroke) { if (history.commit(stroke)) changed(); stroke = null; strokePath = null; } pan = null; if (scene) scene.controls.enabled = true; }
+function startStroke(point) {
+  if (!point || !world.inside(point.x, point.y)) return;
+  const painting = tool === 'paint' || tool === 'erase';
+  if (painting && !world.biomesVisible) { toast('Show the Biomes layer before painting.'); return; }
+  if (tool === 'river' && !world.riversVisible) { toast('Show the River water layer before drawing a river.'); return; }
+  const selected = activeTool(), label = selected === 'paint' ? `Paint ${BIOMES[biome].name.toLowerCase()}` : labels[selected];
+  stroke = history.begin(`${label}${brushMode === 'blend' && ['raise', 'lower', 'stamp'].includes(selected) ? ' · Blend' : ''}`); stroke.target = world.sample(point.x, point.y);
+  if (tool === 'river') riverGuide = [{ ...point }];
+  strokePath = new StrokePath(point, tool === 'river' ? Math.max(3, riverWidth * .25) : Math.max(2, radius * .16)); lastTime = performance.now(); paint(point);
+}
+function showRiverPreview() { map.riverPreview = riverGuide || []; map.needsDraw = true; if (scene) { scene.rivers.setPreview(riverGuide || [], scene.relief); scene.needsDraw = true; } }
+function endStroke() {
+  if (stroke) {
+    if (riverGuide) {
+      if (currentPoint) paint(currentPoint);
+      try { addRiver(world, stroke, riverGuide, { width: riverWidth, depth: riverDepth, natural: riverNatural }); toast('River carved downhill, with water and natural banks. Undo restores the landscape.'); } catch (error) { toast(error.message); }
+      riverGuide = null; showRiverPreview();
+    }
+    if (history.commit(stroke)) changed(); stroke = null; strokePath = null;
+  }
+  pan = null; if (scene) scene.controls.enabled = true;
+}
 function bindCanvas(canvas, pointFor, is3D = false) {
   canvas.addEventListener('contextmenu', e => e.preventDefault());
   canvas.addEventListener('pointerdown', e => {
@@ -86,12 +123,13 @@ function bindCanvas(canvas, pointFor, is3D = false) {
     modifiers = { shift: e.shiftKey, alt: e.altKey };
     if (pan) {
       const dx = e.clientX - pan.x, dy = e.clientY - pan.y;
-      if (is3D) { const scale = scene.camera.position.distanceTo(scene.controls.target) / 650; scene.focus(scene.controls.target.x - dx * scale, scene.controls.target.z - dy * scale); }
-      else { map.center.x -= dx / map.zoom; map.center.y -= dy / map.zoom; map.needsDraw = true; }
+      if (is3D) scene.pan(dx, dy);
+      else { const delta = map.screenDelta(dx, dy); map.center.x -= delta.x; map.center.y -= delta.y; map.needsDraw = true; }
       pan.x = e.clientX; pan.y = e.clientY; return;
     }
     const p = pointFor(e); cursor(p);
     if (stroke && p && strokePath && activeTool() !== 'stamp' && strokePath.move(p, point => paint(point, .65))) lastTime = performance.now();
+    if (riverGuide) showRiverPreview();
   });
   canvas.addEventListener('pointerup', endStroke); canvas.addEventListener('pointercancel', endStroke); canvas.addEventListener('lostpointercapture', endStroke);
   canvas.addEventListener('pointerleave', () => { if (!stroke) cursor(null); });
@@ -111,15 +149,23 @@ $('#sea').oninput = e => { seaBefore ??= world.sea; world.sea = +e.target.value 
 $('#sea').onchange = () => { history.metadata('Change sea level', { sea: seaBefore ?? world.sea }, { sea: world.sea }); seaBefore = null; changed(); };
 $('#ocean').onchange = e => { const before = world.ocean; world.ocean = e.target.checked; history.metadata(world.ocean ? 'Show ocean' : 'Hide ocean', { ocean: before }, { ocean: world.ocean }); map.invalidate(); scene?.invalidate(); changed(); };
 $('#biomes-visible').onchange = e => { const before = world.biomesVisible; world.biomesVisible = e.target.checked; history.metadata(world.biomesVisible ? 'Show biome paint' : 'Hide biome paint', { biomesVisible: before }, { biomesVisible: world.biomesVisible }); map.invalidate(); scene?.invalidate(); changed(); };
-for (const field of ['sun-elevation', 'sun-azimuth']) $(`#${field}`).oninput = e => { $(`#${field}-value`).textContent = `${e.target.value}°`; if (scene) { scene[field === 'sun-elevation' ? 'sunElevation' : 'sunAzimuth'] = +e.target.value; scene.updateSun(); } };
-$('#shadows').onchange = e => { if (scene) { scene.sun.castShadow = e.target.checked; scene.needsDraw = true; } };
+$('#rivers-visible').onchange = e => { endStroke(); const before = world.riversVisible; world.riversVisible = e.target.checked; history.metadata(world.riversVisible ? 'Show river water' : 'Hide river water', { riversVisible: before }, { riversVisible: world.riversVisible }); world.invalidate(); map.invalidate(); scene?.invalidate(); changed(); };
+for (const field of ['sun-elevation', 'sun-azimuth']) $(`#${field}`).oninput = e => { $(`#${field}-value`).textContent = `${e.target.value}°`; const property = field === 'sun-elevation' ? 'sunElevation' : 'sunAzimuth'; map[property] = +e.target.value; map.invalidate(); if (scene) { scene[property] = +e.target.value; scene.updateSun(); } };
+$('#map-rotation').oninput = e => { endStroke(); map.setRotation(+e.target.value); $('#map-rotation-value').textContent = `${e.target.value}°`; $('.map-compass').style.transform = `rotate(${e.target.value}deg)`; };
+$('#scene-rotation').oninput = e => { endStroke(); scene?.setRotation(+e.target.value); $('#scene-rotation-value').textContent = `${e.target.value}°`; };
+function syncOrbit() { if (scene) { const angle = Math.round(scene.getRotation()); $('#scene-rotation').value = angle; $('#scene-rotation-value').textContent = `${angle}°`; } }
+scene?.controls.addEventListener('change', syncOrbit); syncOrbit();
+$('#reset-angles').onclick = () => { endStroke(); map.setRotation(0); $('#map-rotation').value = 0; $('#map-rotation-value').textContent = '0°'; $('.map-compass').style.transform = ''; scene?.setRotation(140); };
+$('#shadows').onchange = e => { if (scene) { scene.sun.castShadow = e.target.checked; scene.renderer.shadowMap.needsUpdate = true; scene.needsDraw = true; } };
 $('#relief').onchange = e => { if (scene) { scene.relief = +e.target.value; scene.invalidate(); } };
+initWorkspaceUI(distance => { endStroke(); scene?.setRenderDistance(distance); });
+if (!scene) $('#render-distance').disabled = true;
 $('#expand').onclick = () => { endStroke(); const before = structuredClone(world.bounds); world.expand($('#expand-direction').value); history.metadata('Expand world borders', { bounds: before }, { bounds: structuredClone(world.bounds) }); scene?.syncBounds(); fit(); changed(); toast('Borders expanded. New terrain is ready to paint.'); };
 $('#world-name').onchange = e => { world.name = e.target.value.trim() || 'Untitled world'; changed(); };
 $('#help').onclick = () => $('#help-dialog').showModal();
 window.addEventListener('keydown', e => {
   if (['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement.tagName) || $('dialog[open]')) return;
-  if (e.code === 'Space') { e.preventDefault(); space = true; }
+  if (e.code === 'Space') { if (['SUMMARY', 'BUTTON'].includes(document.activeElement.tagName)) return; e.preventDefault(); space = true; }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); (e.shiftKey ? $('#redo') : $('#undo')).click(); }
   else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); $('#redo').click(); }
   else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); $('#save').click(); }
@@ -143,7 +189,7 @@ await loadBrushes().catch(e => toast(e.message));
 requestAnimationFrame(() => { fit(); refresh(); $('#status').textContent = 'Ready to sculpt'; });
 function frame(time) {
   requestAnimationFrame(frame);
-  if (stroke && currentPoint && accumulatesWhileHeld(activeTool(), brushMode) && time - lastTime > 45) { paint(currentPoint, .7); lastTime = time; }
+  if (stroke && currentPoint && tool !== 'river' && accumulatesWhileHeld(activeTool(), brushMode) && time - lastTime > 45) { paint(currentPoint, .7); lastTime = time; }
   if (world.dirty.size) { const keys = [...world.dirty]; world.dirty.clear(); map.invalidate(keys); scene?.invalidate(keys); }
   renderViews([['2D', map], ['3D', scene]], (name, error) => { console.error(`${name} view:`, error); $('#status').textContent = `${name} paused · use Reset views`; toast(`${name} view paused. Use Reset views to rebuild it; your work is retained.`); });
 }
