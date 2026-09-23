@@ -6,6 +6,7 @@ import { MapView } from './map-view.js';
 import { SceneView } from './scene-view.js';
 import { addRiver, carveRiver } from './rivers.js';
 import { initWorkspaceUI } from './workspace-ui.js';
+import { OBJECT_TYPES, MAX_OBJECTS, objectType, isObjectTool, scatterObjects, placeObject, eraseObjects } from './objects.js';
 
 const $ = s => document.querySelector(s);
 const world = new World(); seedWorld(world);
@@ -16,28 +17,53 @@ try { scene = new SceneView($('#scene'), world); } catch (error) { console.error
 let tool = 'raise', biome = 0, radius = 56, strength = .45, rotation = 0, brushMode = 'blend', strokeHeight = .3, mask = null, stroke = null, strokePath = null, currentPoint = null, space = false, pan = null;
 let modifiers = { shift: false, alt: false }, lastTime = 0, toastTimer;
 let riverGuide = null, riverWidth = 18, riverDepth = .03, riverNatural = true;
-const labels = { raise: 'Raise terrain', lower: 'Lower terrain', flatten: 'Flatten terrain', smooth: 'Smooth terrain', stamp: 'Stamp terrain', pan: 'Pan view', paint: 'Paint biome', erase: 'Restore natural color', river: 'Carve river' };
+let objectKind = 'pine', objectRadius = 56, objectDensity = .5, objectScale = 1, objectVariation = .25, objectEraseFilter = 'all';
+const labels = { raise: 'Raise terrain', lower: 'Lower terrain', flatten: 'Flatten terrain', smooth: 'Smooth terrain', stamp: 'Stamp terrain', pan: 'Pan view', paint: 'Paint biome', erase: 'Restore natural color', river: 'Carve river', scatter: 'Scatter objects', 'place-object': 'Place object', 'erase-object': 'Erase objects' };
 function toast(message) { $('#toast').textContent = message; $('#toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').hidden = true, 3500); }
 function brushSettings() {
   const sculpt = ['raise', 'lower', 'stamp'].includes(tool), blend = brushMode === 'blend';
-  $('#river-settings').hidden = tool !== 'river'; $('#standard-settings').hidden = tool === 'river';
-  $('.brush-section').hidden = tool === 'river'; $('.brush-current').hidden = tool === 'river'; $('.canvas-bottom').classList.toggle('river-mode', tool === 'river');
+  const objects = isObjectTool(tool);
+  $('#river-settings').hidden = tool !== 'river'; $('#standard-settings').hidden = tool === 'river' || objects;
+  $('#object-settings').hidden = !objects; $('#object-radius-control').hidden = tool === 'place-object';
+  $('#object-placement-settings').hidden = tool === 'erase-object'; $('#object-density-control').hidden = tool !== 'scatter'; $('#object-erase-control').hidden = !objects;
+  $('#object-brush-note').textContent = tool === 'place-object' ? 'One object per click, centered on the cursor. Hold Shift to use the area eraser.' : tool === 'erase-object' ? 'Drag to erase object anchors inside the circle. Terrain and biome paint stay intact.' : 'Drag to splatter objects on land. Overlap stays spaced. Hold Shift to erase.';
+  $('.brush-section').hidden = tool === 'river' || objects; $('.brush-current').hidden = tool === 'river' || objects; $('.canvas-bottom').classList.toggle('river-mode', tool === 'river'); $('.canvas-bottom').classList.toggle('objects-mode', objects);
   $('#buildup-settings').hidden = !sculpt; $('#stroke-height-control').hidden = !blend;
   $('#buildup-note').textContent = blend ? `Up to ${Math.round(strokeHeight * strength * 1000)} m per stroke at this strength. Overlap stays even; release to build another layer.` : tool === 'stamp' ? 'Each click places one heightmap from the sampled height. Blend applies a gentler layer.' : 'Height keeps building as you drag or hold. Use Blend for controlled layers.';
 }
 function selectTool(next) {
-  endStroke(); tool = next; const painting = tool === 'paint' || tool === 'erase';
-  $('#sculpt-tools').hidden = painting; $('#biome-tools').hidden = !painting;
-  $('#modifier-hint').textContent = painting ? 'Erase paint temporarily' : 'Smooth temporarily';
-  document.querySelectorAll('[data-mode]').forEach(b => b.classList.toggle('active', b.dataset.mode === (painting ? 'paint' : 'sculpt')));
+  endStroke(); tool = next; const painting = tool === 'paint' || tool === 'erase', objects = isObjectTool(tool);
+  $('#sculpt-tools').hidden = painting || objects; $('#biome-tools').hidden = !painting; $('#object-tools').hidden = !objects;
+  $('#modifier-hint').textContent = objects ? 'Erase objects temporarily' : painting ? 'Erase paint temporarily' : 'Smooth temporarily';
+  document.querySelectorAll('[data-mode]').forEach(b => b.classList.toggle('active', b.dataset.mode === (objects ? 'objects' : painting ? 'paint' : 'sculpt')));
   document.querySelectorAll('[data-tool]').forEach(b => b.classList.toggle('active', b.dataset.tool === tool));
   $('#stroke-hint').textContent = tool === 'river' ? 'Sketch from source to outlet · release to carve' : tool === 'paint' ? `Paint ${BIOMES[biome].name.toLowerCase()} · Shift to erase` : tool === 'erase' ? 'Remove biome paint to restore natural coloring' : tool === 'pan' ? 'Drag to move the view' : tool === 'stamp' ? 'Click to place a heightmap stamp' : `Click and drag to ${tool} terrain`;
+  if (objects) $('#stroke-hint').textContent = tool === 'erase-object' ? 'Drag to erase objects in the circle' : `${tool === 'scatter' ? 'Drag to scatter' : 'Click to place one'} · ${objectType(objectKind).name.toLowerCase()}`;
   $('#map').style.cursor = tool === 'pan' ? 'grab' : 'crosshair';
   brushSettings();
   $('#panel-brush').open = true;
+  cursor(currentPoint);
 }
 document.querySelectorAll('[data-tool]').forEach(b => b.onclick = () => selectTool(b.dataset.tool));
-document.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => selectTool(b.dataset.mode === 'paint' ? 'paint' : 'raise'));
+document.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => selectTool(b.dataset.mode === 'objects' ? 'scatter' : b.dataset.mode === 'paint' ? 'paint' : 'raise'));
+const objectIcons = {
+  pine: '<path fill="#997453" d="M22 27h5v13h-5z"/><path fill="#426c48" d="M24 5 8 31h32z"/><path fill="#699052" d="M24 0 13 21h22z"/>',
+  oak: '<path fill="#997453" d="M22 22h5v18h-5z"/><path stroke="#997453" stroke-width="3" d="m24 31-9-10m9 7 9-10"/><circle fill="#648546" cx="15" cy="18" r="12"/><circle fill="#789951" cx="32" cy="17" r="12"/><circle fill="#8aa55f" cx="24" cy="10" r="11"/>',
+  shrub: '<ellipse fill="#516838" cx="24" cy="35" rx="21" ry="4"/><circle fill="#728b45" cx="14" cy="28" r="10"/><circle fill="#8fa255" cx="26" cy="23" r="13"/><circle fill="#798e47" cx="37" cy="29" r="8"/>',
+  rock: '<path fill="#8d948c" d="m5 32 6-19 15-6 14 14-4 14-20 2z"/><path fill="#bdbaa5" d="m11 13 15-6 7 16-16 2z"/><path fill="#687773" d="m17 25 16-2 7-2-4 14-20 2z"/>',
+};
+for (const type of OBJECT_TYPES) {
+  const button = document.createElement('button'); button.className = `object-swatch${type.id === objectKind ? ' active' : ''}`; button.dataset.object = type.id; button.setAttribute('aria-pressed', String(type.id === objectKind));
+  button.innerHTML = `<svg viewBox="0 0 48 42" aria-hidden="true">${objectIcons[type.id]}</svg><span>${type.name}</span>`;
+  button.onclick = () => { endStroke(); objectKind = type.id; document.querySelectorAll('[data-object]').forEach(b => { b.classList.toggle('active', b === button); b.setAttribute('aria-pressed', String(b === button)); }); selectTool(isObjectTool(tool) ? tool : 'scatter'); };
+  $('#object-palette').append(button);
+}
+for (const field of ['radius', 'density', 'scale', 'variation']) $(`#object-${field}`).oninput = e => {
+  endStroke(); const value = +e.target.value;
+  if (field === 'radius') objectRadius = value; else if (field === 'density') objectDensity = value / 100; else if (field === 'scale') objectScale = value / 100; else objectVariation = value / 100;
+  $(`#object-${field}-value`).textContent = field === 'radius' ? value * 2 : `${value}%`; cursor(currentPoint);
+};
+$('#object-erase-filter').onchange = e => { endStroke(); objectEraseFilter = e.target.value; };
 BIOMES.forEach((preset, index) => { const button = document.createElement('button'); button.dataset.biome = preset.id; button.className = `biome-swatch${index === biome ? ' active' : ''}`; button.title = `Paint ${preset.name.toLowerCase()}`; const swatch = document.createElement('i'); swatch.style.backgroundColor = preset.color; const label = document.createElement('span'); label.textContent = preset.name; button.append(swatch, label); button.onclick = () => { biome = index; selectTool('paint'); document.querySelectorAll('[data-biome]').forEach(b => b.classList.toggle('active', b === button)); }; $('#biome-palette').append(button); });
 $('#radius').oninput = e => { endStroke(); radius = +e.target.value; $('#radius-value').textContent = radius * 2; };
 $('#strength').oninput = e => { endStroke(); strength = +e.target.value / 100; $('#strength-value').textContent = `${e.target.value}%`; brushSettings(); };
@@ -65,6 +91,7 @@ function refresh() {
   $('#world-stats').textContent = `${world.tiles.size} terrain tiles · ${((world.tiles.size * 4 + world.biomes.size * BIOME_COUNT) * TILE * TILE / 1048576).toFixed(1)} MB`;
   $('#sea').value = Math.round(world.sea * 1000); $('#sea-value').textContent = `${Math.round(world.sea * 1000)} m`; $('#ocean').checked = world.ocean; $('#world-name').value = world.name;
   $('#biomes-visible').checked = world.biomesVisible;
+  $('#objects-visible').checked = world.objectsVisible; $('#object-count').textContent = `${world.objects.length.toLocaleString()} / ${MAX_OBJECTS.toLocaleString()}`;
   $('#rivers-visible').checked = world.riversVisible; $('#river-count').textContent = `${world.rivers.length} ${world.rivers.length === 1 ? 'river' : 'rivers'}`; $('#recarve-rivers').disabled = !world.rivers.length;
 }
 function revealHistoryCursor() {
@@ -76,8 +103,9 @@ function changed() { $('#save-status').textContent = 'Unsaved changes'; refresh(
 function afterHistory() { map.invalidate(); scene?.invalidate(); if (history.entries[history.cursor]?.reset || history.entries[history.cursor - 1]?.reset) resetViews(false); changed(); }
 $('#undo').onclick = () => { endStroke(); if (history.undo()) afterHistory(); };
 $('#redo').onclick = () => { endStroke(); if (history.redo()) afterHistory(); };
-function cursor(point) { const size = tool === 'river' ? riverWidth / 2 : radius; currentPoint = point; map.cursor = point && { ...point, radius: size }; map.needsDraw = true; scene?.cursor(point, size); if (point) $('#coordinates').textContent = `X ${Math.round(point.x)} · Y ${Math.round(point.y)} · ${Math.round(world.sample(point.x, point.y) * 1000)} m`; }
+function cursor(point) { const size = isObjectTool(tool) ? (activeTool() === 'place-object' ? objectType(objectKind).radius * objectScale : objectRadius) : tool === 'river' ? riverWidth / 2 : radius; currentPoint = point; map.cursor = point && { ...point, radius: size }; map.needsDraw = true; scene?.cursor(point, size); if (point) $('#coordinates').textContent = `X ${Math.round(point.x)} · Y ${Math.round(point.y)} · ${Math.round(world.sample(point.x, point.y) * 1000)} m`; }
 function activeTool() {
+  if (isObjectTool(tool)) return modifiers.shift ? 'erase-object' : tool;
   if (tool === 'river') return 'river';
   let activeTool = modifiers.shift ? (tool === 'paint' || tool === 'erase' ? 'erase' : 'smooth') : tool;
   if (modifiers.alt) activeTool = activeTool === 'raise' ? 'lower' : activeTool === 'lower' ? 'raise' : activeTool;
@@ -85,6 +113,14 @@ function activeTool() {
 }
 function paint(point, dt = 1) {
   if (!point || !stroke) return;
+  if (isObjectTool(tool)) {
+    const selected = activeTool(), options = { type: objectKind, scale: objectScale, variation: objectVariation, radius: objectRadius, density: objectDensity };
+    if (selected === 'erase-object') eraseObjects(world, stroke, point.x, point.y, objectRadius, objectEraseFilter === 'selected' ? objectKind : 'all');
+    else if (selected === 'scatter') scatterObjects(world, stroke, point.x, point.y, options);
+    else if (!stroke.objectPlaced) { stroke.objectPlaced = true; placeObject(world, stroke, point.x, point.y, options); }
+    $('#object-count').textContent = `${world.objects.length.toLocaleString()} / ${MAX_OBJECTS.toLocaleString()}`;
+    return;
+  }
   if (riverGuide) { if (world.inside(point.x, point.y) && riverGuide.length < 4096 && Math.hypot(point.x - riverGuide.at(-1).x, point.y - riverGuide.at(-1).y) > .5) riverGuide.push({ ...point }); return; }
   dab(world, stroke, point.x, point.y, { tool: activeTool(), radius, strength, rotation, mask, target: stroke.target, dt, biome, mode: brushMode, strokeHeight });
 }
@@ -92,21 +128,29 @@ function startStroke(point) {
   if (!point || !world.inside(point.x, point.y)) return;
   const painting = tool === 'paint' || tool === 'erase';
   if (painting && !world.biomesVisible) { toast('Show the Biomes layer before painting.'); return; }
+  if (isObjectTool(tool) && !world.objectsVisible) { toast('Show the Objects layer before editing objects.'); return; }
   if (tool === 'river' && !world.riversVisible) { toast('Show the River water layer before drawing a river.'); return; }
-  const selected = activeTool(), label = selected === 'paint' ? `Paint ${BIOMES[biome].name.toLowerCase()}` : labels[selected];
+  const selected = activeTool(), label = selected === 'paint' ? `Paint ${BIOMES[biome].name.toLowerCase()}` : selected === 'scatter' || selected === 'place-object' ? `${selected === 'scatter' ? 'Scatter' : 'Place'} ${objectType(objectKind).name.toLowerCase()}` : labels[selected];
   stroke = history.begin(`${label}${brushMode === 'blend' && ['raise', 'lower', 'stamp'].includes(selected) ? ' · Blend' : ''}`); stroke.target = world.sample(point.x, point.y);
   if (tool === 'river') riverGuide = [{ ...point }];
-  strokePath = new StrokePath(point, tool === 'river' ? Math.max(3, riverWidth * .25) : Math.max(2, radius * .16)); lastTime = performance.now(); paint(point);
+  strokePath = new StrokePath(point, isObjectTool(tool) ? Math.max(1, objectRadius * .2) : tool === 'river' ? Math.max(3, riverWidth * .25) : Math.max(2, radius * .16)); lastTime = performance.now(); paint(point);
 }
 function showRiverPreview() { map.riverPreview = riverGuide || []; map.needsDraw = true; if (scene) { scene.rivers.setPreview(riverGuide || [], scene.relief); scene.needsDraw = true; } }
 function endStroke() {
   if (stroke) {
+    if (isObjectTool(tool) && activeTool() !== 'place-object' && currentPoint) paint(currentPoint);
     if (riverGuide) {
       if (currentPoint) paint(currentPoint);
       try { addRiver(world, stroke, riverGuide, { width: riverWidth, depth: riverDepth, natural: riverNatural }); toast('River carved downhill, with water and natural banks. Undo restores the landscape.'); } catch (error) { toast(error.message); }
       riverGuide = null; showRiverPreview();
     }
-    if (history.commit(stroke)) changed(); stroke = null; strokePath = null;
+    const committed = history.commit(stroke);
+    if (committed) changed();
+    if (isObjectTool(tool) && activeTool() !== 'erase-object') {
+      if (world.objects.length >= MAX_OBJECTS) toast('Object limit reached (20,000). Erase some objects to make room.');
+      else if (!committed) toast('Place objects on land above sea level, with room around existing objects.');
+    }
+    stroke = null; strokePath = null;
   }
   pan = null; if (scene) scene.controls.enabled = true;
 }
@@ -128,7 +172,7 @@ function bindCanvas(canvas, pointFor, is3D = false) {
       pan.x = e.clientX; pan.y = e.clientY; return;
     }
     const p = pointFor(e); cursor(p);
-    if (stroke && p && strokePath && activeTool() !== 'stamp' && strokePath.move(p, point => paint(point, .65))) lastTime = performance.now();
+    if (stroke && p && strokePath && !['stamp', 'place-object'].includes(activeTool()) && strokePath.move(p, point => paint(point, .65))) lastTime = performance.now();
     if (riverGuide) showRiverPreview();
   });
   canvas.addEventListener('pointerup', endStroke); canvas.addEventListener('pointercancel', endStroke); canvas.addEventListener('lostpointercapture', endStroke);
@@ -150,6 +194,7 @@ $('#sea').onchange = () => { history.metadata('Change sea level', { sea: seaBefo
 $('#ocean').onchange = e => { const before = world.ocean; world.ocean = e.target.checked; history.metadata(world.ocean ? 'Show ocean' : 'Hide ocean', { ocean: before }, { ocean: world.ocean }); map.invalidate(); scene?.invalidate(); changed(); };
 $('#biomes-visible').onchange = e => { const before = world.biomesVisible; world.biomesVisible = e.target.checked; history.metadata(world.biomesVisible ? 'Show biome paint' : 'Hide biome paint', { biomesVisible: before }, { biomesVisible: world.biomesVisible }); map.invalidate(); scene?.invalidate(); changed(); };
 $('#rivers-visible').onchange = e => { endStroke(); const before = world.riversVisible; world.riversVisible = e.target.checked; history.metadata(world.riversVisible ? 'Show river water' : 'Hide river water', { riversVisible: before }, { riversVisible: world.riversVisible }); world.invalidate(); map.invalidate(); scene?.invalidate(); changed(); };
+$('#objects-visible').onchange = e => { endStroke(); const before = world.objectsVisible; world.objectsVisible = e.target.checked; history.metadata(world.objectsVisible ? 'Show objects' : 'Hide objects', { objectsVisible: before }, { objectsVisible: world.objectsVisible }); world.revision++; map.needsDraw = true; changed(); };
 for (const field of ['sun-elevation', 'sun-azimuth']) $(`#${field}`).oninput = e => { $(`#${field}-value`).textContent = `${e.target.value}°`; const property = field === 'sun-elevation' ? 'sunElevation' : 'sunAzimuth'; map[property] = +e.target.value; map.invalidate(); if (scene) { scene[property] = +e.target.value; scene.updateSun(); } };
 $('#map-rotation').oninput = e => { endStroke(); map.setRotation(+e.target.value); $('#map-rotation-value').textContent = `${e.target.value}°`; $('.map-compass').style.transform = `rotate(${e.target.value}deg)`; };
 $('#scene-rotation').oninput = e => { endStroke(); scene?.setRotation(+e.target.value); $('#scene-rotation-value').textContent = `${e.target.value}°`; };
@@ -165,13 +210,14 @@ $('#world-name').onchange = e => { world.name = e.target.value.trim() || 'Untitl
 $('#help').onclick = () => $('#help-dialog').showModal();
 window.addEventListener('keydown', e => {
   if (['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement.tagName) || $('dialog[open]')) return;
+  if (e.key === 'Shift') { modifiers.shift = true; cursor(currentPoint); }
   if (e.code === 'Space') { if (['SUMMARY', 'BUTTON'].includes(document.activeElement.tagName)) return; e.preventDefault(); space = true; }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); (e.shiftKey ? $('#redo') : $('#undo')).click(); }
   else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); $('#redo').click(); }
   else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); $('#save').click(); }
-  else if (!e.ctrlKey && !e.metaKey) { const shortcuts = { r: 'raise', l: 'lower', f: 'flatten', s: 'smooth', t: 'stamp', h: 'pan', b: 'paint', e: 'erase' }; if (shortcuts[e.key.toLowerCase()]) selectTool(shortcuts[e.key.toLowerCase()]); if (e.key === 'Home') { e.preventDefault(); fit(); } if (e.key === '[' || e.key === ']') { $('#radius').value = radius + (e.key === ']' ? 4 : -4); $('#radius').dispatchEvent(new Event('input')); } }
+  else if (!e.ctrlKey && !e.metaKey) { const shortcuts = { r: 'raise', l: 'lower', f: 'flatten', s: 'smooth', t: 'stamp', h: 'pan', b: 'paint', o: 'scatter', e: isObjectTool(tool) ? 'erase-object' : 'erase' }; if (shortcuts[e.key.toLowerCase()]) selectTool(shortcuts[e.key.toLowerCase()]); if (e.key === 'Home') { e.preventDefault(); fit(); } if (e.key === '[' || e.key === ']') { const slider = $(isObjectTool(tool) ? '#object-radius' : '#radius'); slider.value = +slider.value + (e.key === ']' ? 4 : -4); slider.dispatchEvent(new Event('input')); } }
 });
-window.addEventListener('keyup', e => { if (e.code === 'Space') space = false; }); window.addEventListener('blur', () => { space = false; endStroke(); });
+window.addEventListener('keyup', e => { if (e.code === 'Space') space = false; if (e.key === 'Shift') { modifiers.shift = false; cursor(currentPoint); } }); window.addEventListener('blur', () => { space = false; modifiers = { shift: false, alt: false }; endStroke(); });
 
 async function loadBrushes() {
   const response = await fetch('/brushes/manifest.json'); if (!response.ok) throw new Error('Brush library could not load'); const brushes = await response.json();

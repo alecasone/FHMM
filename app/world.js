@@ -1,4 +1,5 @@
 import { BIOME_COUNT } from './biomes.js';
+import { objectPatch, objectBytes, applyObjectPatch } from './objects.js';
 export const TILE = 128;
 export const FLOOR = -.18;
 export const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -10,6 +11,7 @@ export class World {
     this.tiles = new Map();
     this.biomes = new Map(); this.biomesVisible = true;
     this.rivers = []; this.riversVisible = true;
+    this.objects = []; this.objectsVisible = true; this.objectsRevision = 0;
     this.bounds = { minX: -512, minY: -512, maxX: 512, maxY: 512 };
     this.sea = 0; this.ocean = true; this.name = 'The Unwritten Isles';
     this.dirty = new Set(); this.revision = 0;
@@ -97,9 +99,11 @@ export class History {
       if (indices.length) { patches.push({ channel: 'biomes', key, indices: Uint16Array.from(indices), before: Uint8Array.from(before), after: Uint8Array.from(after) }); bytes += indices.length * (2 + 2 * BIOME_COUNT); }
     }
     const riverMeta = stroke.riversBefore ? { before: { rivers: stroke.riversBefore }, after: { rivers: structuredClone(this.world.rivers) } } : {};
+    const objects = objectPatch(this.world, stroke);
+    if (objects) bytes += objectBytes(objects);
     if (stroke.riversBefore) bytes += metadataBytes(riverMeta.before, riverMeta.after);
-    if (patches.length || stroke.riversBefore) this.push({ label: stroke.label, patches, bytes, time: Date.now(), ...riverMeta });
-    return patches.length > 0 || !!stroke.riversBefore;
+    if (patches.length || stroke.riversBefore || objects) this.push({ label: stroke.label, patches, bytes, time: Date.now(), ...riverMeta, ...(objects ? { objects } : {}) });
+    return patches.length > 0 || !!stroke.riversBefore || !!objects;
   }
   metadata(label, before, after) { if (JSON.stringify(before) !== JSON.stringify(after)) this.push({ label, before, after, bytes: metadataBytes(before, after), time: Date.now() }); }
   push(entry) {
@@ -108,6 +112,7 @@ export class History {
     while (this.entries.length > 1 && (this.bytes > this.budget || this.entries.length > this.limit)) { this.bytes -= this.entries.shift().bytes; this.cursor--; this.trimmed++; }
   }
   apply(entry, forward) {
+    if (entry.objects) applyObjectPatch(this.world, entry.objects, forward);
     if (entry.before && entry.after) { Object.assign(this.world, structuredClone(forward ? entry.after : entry.before)); this.world.invalidate(); }
     if (entry.patches) for (const patch of entry.patches) {
       const paint = patch.channel === 'biomes', store = paint ? this.world.biomes : this.world.tiles, stride = paint ? BIOME_COUNT : 1;
@@ -126,9 +131,10 @@ export class History {
 
 export function resetWorld(world, history, preset = 'ocean') {
   const next = new World(); if (preset === 'islands') seedWorld(next);
-  const metadata = w => ({ bounds: structuredClone(w.bounds), sea: w.sea, ocean: w.ocean, biomesVisible: w.biomesVisible, rivers: structuredClone(w.rivers), riversVisible: w.riversVisible });
+  const metadata = w => ({ bounds: structuredClone(w.bounds), sea: w.sea, ocean: w.ocean, biomesVisible: w.biomesVisible, rivers: structuredClone(w.rivers), riversVisible: w.riversVisible, objectsVisible: w.objectsVisible });
   const entry = { label: preset === 'islands' ? 'Reset to starter islands' : 'Reset to empty ocean', reset: true, before: metadata(world), after: metadata(next), patches: [], bytes: 512, time: Date.now() };
   entry.bytes = metadataBytes(entry.before, entry.after);
+  if (world.objects.length) { entry.objects = { added: [], removed: structuredClone(world.objects) }; entry.bytes += objectBytes(entry.objects); }
   for (const channel of ['height', 'biomes']) {
     const current = channel === 'height' ? world.tiles : world.biomes, target = channel === 'height' ? next.tiles : next.biomes;
     const stride = channel === 'height' ? 1 : BIOME_COUNT, Type = stride === 1 ? Float32Array : Uint8Array, baseline = stride === 1 ? Math.fround(FLOOR) : 0;
@@ -142,7 +148,7 @@ export function resetWorld(world, history, preset = 'ocean') {
       if (indices.length) { entry.patches.push({ key, channel, indices: Uint16Array.from(indices), before: Type.from(before), after: Type.from(after) }); entry.bytes += indices.length * (2 + stride * Type.BYTES_PER_ELEMENT * 2); }
     }
   }
-  world.tiles = next.tiles; world.biomes = next.biomes; Object.assign(world, metadata(next)); world.dirty.clear(); world.invalidate(); history.push(entry);
+  world.tiles = next.tiles; world.biomes = next.biomes; world.objects = []; world.objectsRevision++; Object.assign(world, metadata(next)); world.dirty.clear(); world.invalidate(); history.push(entry);
 }
 
 export function dab(world, stroke, cx, cy, options) {

@@ -2,6 +2,7 @@ import { TILE, FLOOR, terrainColor } from './world.js';
 import { BIOME_COUNT, surfaceColor } from './biomes.js';
 import { radians, rotate2D, sunDirection, hillshade, wrapDegrees } from './view-math.js';
 import { riverSections } from './rivers.js';
+import { drawMapObjects } from './object-map.js';
 export class MapView {
   constructor(canvas, world) {
     this.canvas = canvas; this.ctx = canvas.getContext('2d', { alpha: false }); this.world = world;
@@ -40,6 +41,7 @@ export class MapView {
   }
   draw() {
     const time = performance.now();
+    if (this.objectRevision !== this.world.revision) { this.objectRevision = this.world.revision; this.needsDraw = true; }
     if (this.world.riversVisible && this.world.rivers.length && time - this.lastFlowFrame > 50) { this.needsDraw = true; this.lastFlowFrame = time; }
     if (!this.needsDraw || !this.width || !this.height) return;
     if (!(this.zoom > 0) || !Number.isFinite(this.zoom)) this.fit();
@@ -65,6 +67,7 @@ export class MapView {
     this.drawRivers(c, px, py, z, time);
     const minX = Math.max(b.minX, this.center.x - halfW / z), maxX = Math.min(b.maxX, this.center.x + halfW / z);
     const minY = Math.max(b.minY, this.center.y - halfH / z), maxY = Math.min(b.maxY, this.center.y + halfH / z);
+    drawMapObjects(c, this.world, px, py, z, { minX, minY, maxX, maxY });
     c.strokeStyle = '#b9d9d010'; c.lineWidth = 1; c.beginPath();
     for (let x = Math.ceil(minX / spacing) * spacing; x <= maxX; x += spacing) { c.moveTo(px(x), py(minY)); c.lineTo(px(x), py(maxY)); }
     for (let y = Math.ceil(minY / spacing) * spacing; y <= maxY; y += spacing) { c.moveTo(px(minX), py(y)); c.lineTo(px(maxX), py(y)); } c.stroke(); c.restore();

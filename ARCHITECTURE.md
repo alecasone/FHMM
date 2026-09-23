@@ -56,3 +56,13 @@ Map rendering applies a camera rotation and inverse-transform picking/panning. F
 
 
 Sidebar expansion and render-distance preferences are stored in a separate versioned localStorage record, with graceful fallback when storage is disabled. They never enter terrain history or world files. Changing distance disposes off-region geometry before rebuilding, refreshes the cached shadow map, and supplies the same bounds to river rendering. The ocean plane continues to cover the world. No distance fog is added.
+
+## Terrain objects (v0.4)
+
+`objects.js` stores up to 20,000 immutable object records: UUID, type, horizontal position, scale, yaw, and color variation. Elevation is derived, so sculpting and relief changes cannot leave objects floating at an obsolete stored height. Placement uses the full height field; 3D anchoring interpolates the actual two triangles of the preview mesh. Objects below sea level are hidden, not deleted. Their visibility and presence are independent of biome paint.
+
+Scatter samples a jittered world-space grid with a seed and visited-cell set per stroke. Grid spacing depends on density and object footprint; a 32-sample spatial hash rejects close neighbors across strokes and tile boundaries. Distance-spaced brush dabs keep placement independent of pointer event frequency. Detail emits once per click; erasing filters anchors within a circular area and optionally by type. None of these tools accumulates while held.
+
+History stores per-stroke added/removed records, including cancellation of objects added and erased in the same stroke. It never copies the full object layer for an ordinary edit. Reset records the removed objects in its existing combined transaction. JSON metadata byte estimates participate in the same history budget as terrain and rivers. FMM4 validates object fields, unique IDs, limits, layer visibility, and both replay branches; FMM1–3 migrate to an empty layer. Recovery uses the same format.
+
+`object-view.js` builds four shared colored low-poly geometries and one `InstancedMesh` per visible type, with capacity reused as strokes grow. Instance matrices and colors refresh on world changes, relief changes, or a new render window; invisible batches release their instance buffers. The existing terrain neighborhood bounds limit visible objects, and shadow maps invalidate on object changes. `object-map.js` draws matching top-down symbols with rotated-map culling. Objects do not allocate height or biome tiles and never enter the heightmap export.

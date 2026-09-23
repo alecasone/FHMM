@@ -19,5 +19,5 @@ export class StrokePath {
 }
 
 export function accumulatesWhileHeld(tool, mode) {
-  return !['stamp', 'pan'].includes(tool) && !(mode === 'blend' && ['raise', 'lower'].includes(tool));
+  return !['stamp', 'pan', 'scatter', 'place-object', 'erase-object'].includes(tool) && !(mode === 'blend' && ['raise', 'lower'].includes(tool));
 }

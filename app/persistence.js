@@ -20,6 +20,7 @@ window.addEventListener('beforeunload', e => { if (dirty) { e.preventDefault(); 
 document.addEventListener('visibilitychange', () => { if (document.hidden) recoverSave(); });
 function replace(loaded) {
   endStroke(); world.rivers = loaded.world.rivers; world.riversVisible = loaded.world.riversVisible;
+  world.objects = loaded.world.objects; world.objectsVisible = loaded.world.objectsVisible; world.objectsRevision++;
   endStroke(); world.tiles = loaded.world.tiles; world.biomes = loaded.world.biomes; world.biomesVisible = loaded.world.biomesVisible; world.bounds = loaded.world.bounds; world.sea = loaded.world.sea; world.ocean = loaded.world.ocean; world.name = loaded.world.name; world.dirty.clear(); world.invalidate();
   history.entries = loaded.history.entries; history.cursor = loaded.history.cursor; history.bytes = loaded.history.bytes; history.trimmed = loaded.history.trimmed;
   resetViews(false); refresh();

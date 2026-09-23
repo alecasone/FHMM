@@ -3,6 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TILE, keyOf, terrainColor, clamp } from './world.js';
 import { BIOME_COUNT, surfaceColor } from './biomes.js';
 import { RiverView } from './river-view.js';
+import { ObjectView } from './object-view.js';
 import { radians, sunDirection, wrapDegrees } from './view-math.js';
 import { DEFAULT_RENDER_DISTANCE, normalizeRenderDistance, terrainWindow } from './terrain-window.js';
 export class SceneView {
@@ -31,6 +32,7 @@ export class SceneView {
     const ringPositions = new Float32Array(97 * 3); this.ring = new THREE.Line(new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(ringPositions, 3)), new THREE.LineBasicMaterial({ color: '#edffc0', depthTest: false, transparent: true, opacity: .95 })); this.ring.frustumCulled = false; this.ring.renderOrder = 10; this.ring.visible = false; this.scene.add(this.ring);
     this.ray = new THREE.Raycaster(); this.pointer = new THREE.Vector2(); this.plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
     this.rivers = new RiverView(this.scene, world);
+    this.objects = new ObjectView(this.scene, world);
     this.observer = new ResizeObserver(() => this.resize()); this.observer.observe(container); this.resize(); this.syncBounds();
   }
   resize() { const w = this.container.clientWidth, h = this.container.clientHeight; if (!w || !h) return; this.renderer.setSize(w, h, false); this.camera.aspect = w / h; this.camera.updateProjectionMatrix(); this.needsDraw = true; }
@@ -114,6 +116,7 @@ export class SceneView {
       this.build(key, x, y); updated++; this.needsDraw = true;
     }
     if (this.rivers.update(this.relief, bounds)) this.needsDraw = true;
+    if (this.objects.update(this.relief, bounds, this.step)) { this.needsDraw = true; this.renderer.shadowMap.needsUpdate = true; }
     if (this.needsDraw) { this.renderer.render(this.scene, this.camera); this.needsDraw = false; }
   }
 }

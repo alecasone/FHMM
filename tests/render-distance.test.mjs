@@ -42,6 +42,7 @@ function sceneHarness() {
     controls: { target: { x: 0, z: 0 } }, renderDistance: 2, meshes: new Map(), pending: new Set(),
     scene: { remove() {} }, renderer: { shadowMap: {}, render() {} },
     rivers: { update(relief, bounds) { this.bounds = bounds; return false; } },
+    objects: { update(relief, bounds) { this.bounds = bounds; return false; } },
     build(key) { built.push(key); this.pending.delete(key); this.meshes.set(key, { geometry: { dispose() { disposed.push(key); } } }); },
   });
   view.world.bounds = { ...largeBounds };
@@ -62,6 +63,7 @@ test('3D streams a bounded batch, expands live, and immediately disposes distant
   assert.equal(view.meshes.size, 16); assert.equal(disposed.length, 128);
   assert.equal(view.renderer.shadowMap.needsUpdate, true);
   assert.deepEqual(view.rivers.bounds, smallBounds);
+  assert.deepEqual(view.objects.bounds, smallBounds);
   assert.equal(view.world.tiles.size, 0, 'view distance must not allocate authoritative terrain');
 });
 
@@ -75,5 +77,6 @@ test('edited meshes refresh before missing terrain; panning unloads old regions 
   assert(disposed.length >= 16); assert(view.meshes.size <= 4);
   settle(); assert.equal(view.meshes.size, 16);
   assert.deepEqual(view.rivers.bounds, terrainWindow(largeBounds, 10000, -10000, 2).bounds);
+  assert.deepEqual(view.objects.bounds, view.rivers.bounds);
   assert.equal(view.pending.size, 0);
 });

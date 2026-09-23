@@ -79,3 +79,18 @@ New saves use **FMM3** to preserve rivers, layer visibility, and river undo/redo
 **3D view → Render distance** changes the terrain radius around the camera focus, from 256 to 1,536 samples in 128-sample steps (default 768). Larger settings show farther across expanded worlds and use more graphics memory. Smaller settings suit close-up painting. Terrain loads progressively, nearest first; current edits take priority. Panning or **Focus here** moves the region. The ocean remains world-wide, and distance fog stays disabled. This changes the preview only, with full-resolution terrain preserved.
 
 Click a sidebar section heading to open or close it, or use **Collapse all / Expand all** independently on either sidebar. Brush size and strength stay together; **Buildup & brush rotation** contains the advanced brush controls. Lighting, view rotation, layers, world expansion/export, and history each have their own section. Undo/Redo remain at the top of the right sidebar while you scroll. Switching tools opens the relevant brush settings. Panel choices and render distance are remembered in this browser, separately from world saves and undo history.
+
+## Trees, shrubs, and rocks (v0.4)
+
+Select **Objects** or press **O**, then choose **Pine tree**, **Broadleaf tree**, **Shrub**, or **Rock**. Edit in either the 2D map or 3D terrain view:
+
+- **Scatter** splatters objects across a circular brush as you drag. Brush size sets the area; density sets the spacing. Overlapping passes in one stroke do not keep adding objects to the same spots, and holding still does not build up objects.
+- **Detail** places one object at the cursor per click, even if you drag afterward. Zoom in for precise placement.
+- **Eraser** removes objects whose anchors fall inside the circle. Choose all types or only the selected type. **E** selects the eraser while in Objects mode; **Shift** temporarily erases. **[ / ]** change the object brush size independently of terrain brushes.
+- **Object size** and **Size variation** control scale; rotation and color vary automatically. Set variation to zero for a consistent size.
+
+Objects are separate from heights and biome paint. They are placed above sea level, follow the terrain when you sculpt or change 3D relief, and hide when their anchors become submerged. Raising the ground or lowering the sea reveals them again. The **Objects** layer checkbox hides them in both views; enable it before editing objects. Small top-down symbols mark their positions in 2D; 3D uses shared, low-poly models with shadows.
+
+Every stroke, layer toggle, and reset supports undo/redo. **Save world** and browser recovery preserve objects and their retained history. New saves use **FMM4**; FMM1, FMM2, and FMM3 files still open with an empty object layer. Older app versions cannot open FMM4 saves. Heightmap export still contains heights only.
+
+The current budget is **20,000 objects per world**. 3D objects follow the terrain render distance. Models are instanced by type, and object history stores only additions/removals from each stroke. `npm test` covers placement, scatter spacing, erasing, limits, history, file validation/migration, and terrain anchoring.
