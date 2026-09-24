@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { OBJECT_TYPES, objectGroundHeight } from './objects.js';
+import { addSceneryParts } from './scenery-models.js';
 
 // A few shared low-poly models, with per-instance size, yaw and color variation.
 export function createObjectGeometry(type) {
@@ -31,7 +32,7 @@ export function createObjectGeometry(type) {
     const stone = new THREE.IcosahedronGeometry(3.2, 0); stone.rotateY(.4); stone.rotateZ(.18);
     part(stone, '#919488', 0, 1.15, 0, 1.15, .8, .9);
     part(new THREE.IcosahedronGeometry(1.5, 0), '#aaab98', 2.2, .45, 1, 1, .7, .85);
-  }
+  } else addSceneryParts(type, part);
   const geometry = mergeGeometries(parts); parts.forEach(p => p.dispose());
   geometry.computeBoundingSphere(); return geometry;
 }

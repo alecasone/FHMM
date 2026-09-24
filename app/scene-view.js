@@ -5,7 +5,8 @@ import { BIOME_COUNT, surfaceColor } from './biomes.js';
 import { RiverView } from './river-view.js';
 import { ObjectView } from './object-view.js';
 import { radians, sunDirection, wrapDegrees } from './view-math.js';
-import { DEFAULT_RENDER_DISTANCE, normalizeRenderDistance, terrainWindow } from './terrain-window.js';
+import { DEFAULT_RENDER_DISTANCE, normalizeRenderDistance, maximumRenderDistance, terrainWindow } from './terrain-window.js';
+import { brushPreviewStamp } from './brush-preview.js';
 export class SceneView {
   constructor(container, world) {
     this.world = world; this.container = container; this.relief = 180; this.meshes = new Map(); this.pending = new Set(); this.needsDraw = true; this.sunAzimuth = 315; this.sunElevation = 32; this.step = 2;
@@ -30,13 +31,16 @@ export class SceneView {
     this.water = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshStandardMaterial({ color: '#1d5061', transparent: true, opacity: .72, roughness: .57, metalness: .05, depthWrite: false, side: THREE.DoubleSide })); this.water.rotation.x = -Math.PI / 2; this.water.renderOrder = 2; this.water.receiveShadow = true; this.scene.add(this.water);
     this.outline = new THREE.LineLoop(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: '#8bb2ad', transparent: true, opacity: .28 })); this.scene.add(this.outline);
     const ringPositions = new Float32Array(97 * 3); this.ring = new THREE.Line(new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(ringPositions, 3)), new THREE.LineBasicMaterial({ color: '#edffc0', depthTest: false, transparent: true, opacity: .95 })); this.ring.frustumCulled = false; this.ring.renderOrder = 10; this.ring.visible = false; this.scene.add(this.ring);
+    this.brushPreviewMaterial = new THREE.MeshBasicMaterial({ transparent: true, opacity: 1, depthWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -1, toneMapped: false });
+    const previewGeometry = new THREE.PlaneGeometry(2, 2, 32, 32); previewGeometry.rotateX(-Math.PI / 2);
+    this.brushPreviewMesh = new THREE.Mesh(previewGeometry, this.brushPreviewMaterial); this.brushPreviewMesh.visible = false; this.brushPreviewMesh.frustumCulled = false; this.brushPreviewMesh.renderOrder = 9; this.scene.add(this.brushPreviewMesh); this.brushPreviewMask = undefined;
     this.ray = new THREE.Raycaster(); this.pointer = new THREE.Vector2(); this.plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
     this.rivers = new RiverView(this.scene, world);
     this.objects = new ObjectView(this.scene, world);
     this.observer = new ResizeObserver(() => this.resize()); this.observer.observe(container); this.resize(); this.syncBounds();
   }
   resize() { const w = this.container.clientWidth, h = this.container.clientHeight; if (!w || !h) return; this.renderer.setSize(w, h, false); this.camera.aspect = w / h; this.camera.updateProjectionMatrix(); this.needsDraw = true; }
-  setRenderDistance(value) { this.renderDistance = normalizeRenderDistance(value); this.needsDraw = true; }
+  setRenderDistance(value) { this.renderDistance = normalizeRenderDistance(value, maximumRenderDistance(this.world.bounds)); this.needsDraw = true; }
   updateSun() {
     const direction = sunDirection(this.sunAzimuth, this.sunElevation), t = this.controls.target;
     this.sun.target.position.set(t.x, 0, t.z); this.sun.position.set(t.x + direction.x * 1800, direction.y * 1800, t.z + direction.z * 1800); this.needsDraw = true;
@@ -49,6 +53,9 @@ export class SceneView {
   syncBounds() {
     const b = this.world.bounds, signature = [b.minX, b.minY, b.maxX, b.maxY, this.world.sea, this.world.ocean, this.relief].join(',');
     if (this.boundsSignature === signature) return; this.boundsSignature = signature;
+    const span = Math.max(b.maxX - b.minX, b.maxY - b.minY);
+    this.controls.maxDistance = Math.max(4500, span * 4);
+    this.camera.far = Math.max(15000, span * 8); this.camera.updateProjectionMatrix();
     const x = (b.minX + b.maxX) / 2, z = (b.minY + b.maxY) / 2;
     this.water.position.set(x, this.world.sea * this.relief + .12, z); this.water.scale.set(b.maxX - b.minX, b.maxY - b.minY, 1); this.water.visible = this.world.ocean;
     const y = this.world.sea * this.relief + .4;
@@ -57,7 +64,7 @@ export class SceneView {
   focus(x, y, fit = false) {
     const old = this.controls.target.clone(), b = this.world.bounds;
     this.controls.target.set(x, 0, y);
-    if (fit) { const size = Math.min(1536, Math.max(b.maxX - b.minX, b.maxY - b.minY)), a = Math.atan2(this.camera.position.x - old.x, -(this.camera.position.z - old.z)); this.camera.position.set(x + Math.sin(a) * size * 1.13, size * .72, y - Math.cos(a) * size * 1.13); }
+    if (fit) { const size = Math.max(b.maxX - b.minX, b.maxY - b.minY), a = Math.atan2(this.camera.position.x - old.x, -(this.camera.position.z - old.z)); this.camera.position.set(x + Math.sin(a) * size * 1.13, size * .72, y - Math.cos(a) * size * 1.13); }
     else this.camera.position.add(this.controls.target.clone().sub(old));
     this.controls.update(); this.needsDraw = true;
   }
@@ -88,10 +95,34 @@ export class SceneView {
     const p = hits[0]?.point || this.ray.ray.intersectPlane(this.plane, new THREE.Vector3());
     return p ? { x: p.x, y: p.z } : null;
   }
-  cursor(point, radius) {
+  cursor(point, radius, preview = null) {
     this.ring.visible = !!point;
     if (point) { const pos = this.ring.geometry.attributes.position; for (let i = 0; i < pos.count; i++) { const a = i / (pos.count - 1) * Math.PI * 2, x = point.x + Math.cos(a) * radius, z = point.y + Math.sin(a) * radius; pos.setXYZ(i, x, Math.max(this.world.sample(x, z) * this.relief, this.world.ocean ? this.world.sea * this.relief : -Infinity) + 1, z); } pos.needsUpdate = true; }
+    const mesh = this.brushPreviewMesh, enabled = !!point && !!preview;
+    mesh.visible = enabled;
+    this.brushPreviewMaterial.opacity = preview?.opacity ?? .36;
+    this.ring.material.opacity = preview?.mask ? .32 : .95;
+    if (enabled) {
+      if (this.brushPreviewMask !== preview.mask) {
+        this.brushPreviewMaterial.map?.dispose();
+        const texture = new THREE.CanvasTexture(brushPreviewStamp(preview.mask)); texture.colorSpace = THREE.SRGBColorSpace;
+        this.brushPreviewMaterial.map = texture; this.brushPreviewMaterial.needsUpdate = true; this.brushPreviewMask = preview.mask;
+      }
+      const angle = preview.rotation || 0;
+      mesh.position.set(point.x, 0, point.y); mesh.scale.set(radius, 1, radius); mesh.rotation.y = -angle;
+      this.brushPreviewState = { point, radius, angle };
+    }
     this.needsDraw = true;
+  }
+  updateBrushPreviewSurface() {
+    if (!this.brushPreviewMesh.visible || !this.brushPreviewState) return;
+    const { point, radius, angle } = this.brushPreviewState, cos = Math.cos(angle), sin = Math.sin(angle), pos = this.brushPreviewMesh.geometry.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      const lx = pos.getX(i) * radius, lz = pos.getZ(i) * radius;
+      const x = point.x + lx * cos - lz * sin, z = point.y + lx * sin + lz * cos;
+      pos.setY(i, Math.max(this.world.sample(x, z), this.world.ocean ? this.world.sea : -1) * this.relief + 1.6);
+    }
+    pos.needsUpdate = true;
   }
   draw() {
     if (!this.container.clientWidth || !this.container.clientHeight || this.contextLost) return;
@@ -117,6 +148,6 @@ export class SceneView {
     }
     if (this.rivers.update(this.relief, bounds)) this.needsDraw = true;
     if (this.objects.update(this.relief, bounds, this.step)) { this.needsDraw = true; this.renderer.shadowMap.needsUpdate = true; }
-    if (this.needsDraw) { this.renderer.render(this.scene, this.camera); this.needsDraw = false; }
+    if (this.needsDraw) { this.updateBrushPreviewSurface(); this.renderer.render(this.scene, this.camera); this.needsDraw = false; }
   }
 }

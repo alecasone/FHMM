@@ -13,7 +13,7 @@ A local, web-based fantasy terrain painter. Double-click **Launch FMM.cmd** to o
 - The separate **Ocean** layer has adjustable sea level and visibility. Water never overwrites terrain heights.
 - **Expand** adds 256 samples to any border or every border, with undo support.
 
-All **44 supplied 2048², 16-bit heightmaps** are included as optimized 256², 16-bit brush masks. The originals in `Heightmaps` are untouched. Thumbnails are generated separately. Run `npm run prepare-brushes` after adding PNG brushes to that folder.
+All **44 supplied 2048², 16-bit heightmaps** are included as optimized 256², 16-bit brush masks. The originals in `Heightmaps` are untouched. Thumbnails are generated separately. Add PNGs to Heightmaps and click Scan in the brush library. New heightmaps are prepared on demand in a local runtime cache.
 
 ## Saving and history
 

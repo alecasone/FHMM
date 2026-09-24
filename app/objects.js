@@ -1,17 +1,177 @@
 // Objects store horizontal anchors only. Their height is sampled from the terrain.
-export const MAX_OBJECTS = 20000;
+export const MAX_OBJECTS = 2 ** 50;
+export function objectLimit(world) { const b = world.bounds; return Math.min(MAX_OBJECTS, (b.maxX - b.minX) * (b.maxY - b.minY)); }
 export const OBJECT_TYPES = [
-  { id: 'pine', name: 'Pine tree', radius: 3.8, color: '#315d40' },
-  { id: 'oak', name: 'Broadleaf tree', radius: 5, color: '#648343' },
-  { id: 'shrub', name: 'Shrub', radius: 2.8, color: '#82944b' },
-  { id: 'rock', name: 'Rock', radius: 3.2, color: '#93958b' },
+  {
+    "id": "pine",
+    "name": "Pine tree",
+    "radius": 3.8,
+    "color": "#315d40",
+    "category": "Trees",
+    "symbol": "conifer"
+  },
+  {
+    "id": "oak",
+    "name": "Broadleaf tree",
+    "radius": 5,
+    "color": "#648343",
+    "category": "Trees",
+    "symbol": "tree"
+  },
+  {
+    "id": "spruce",
+    "name": "Spruce",
+    "radius": 4,
+    "color": "#2c514e",
+    "category": "Trees",
+    "symbol": "conifer"
+  },
+  {
+    "id": "birch",
+    "name": "Birch",
+    "radius": 3.5,
+    "color": "#a5b76b",
+    "category": "Trees",
+    "symbol": "birch"
+  },
+  {
+    "id": "willow",
+    "name": "Willow",
+    "radius": 7.5,
+    "color": "#718c56",
+    "category": "Trees",
+    "symbol": "willow"
+  },
+  {
+    "id": "autumn",
+    "name": "Autumn maple",
+    "radius": 5.5,
+    "color": "#bf7037",
+    "category": "Trees",
+    "symbol": "tree"
+  },
+  {
+    "id": "dead-tree",
+    "name": "Dead tree",
+    "radius": 3.8,
+    "color": "#85735c",
+    "category": "Trees",
+    "symbol": "dead"
+  },
+  {
+    "id": "shrub",
+    "name": "Shrub",
+    "radius": 2.8,
+    "color": "#82944b",
+    "category": "Plants",
+    "symbol": "shrub"
+  },
+  {
+    "id": "grass",
+    "name": "Tall grass",
+    "radius": 1.8,
+    "color": "#899955",
+    "category": "Plants",
+    "symbol": "grass"
+  },
+  {
+    "id": "fern",
+    "name": "Fern",
+    "radius": 2.4,
+    "color": "#488452",
+    "category": "Plants",
+    "symbol": "fern"
+  },
+  {
+    "id": "reeds",
+    "name": "Reeds",
+    "radius": 2,
+    "color": "#8b9055",
+    "category": "Plants",
+    "symbol": "reeds"
+  },
+  {
+    "id": "flowers",
+    "name": "Wildflowers",
+    "radius": 2,
+    "color": "#b48ab2",
+    "category": "Plants",
+    "symbol": "flowers"
+  },
+  {
+    "id": "rock",
+    "name": "Rock",
+    "radius": 3.2,
+    "color": "#93958b",
+    "category": "Rocks",
+    "symbol": "rock"
+  },
+  {
+    "id": "boulder",
+    "name": "Granite boulder",
+    "radius": 5.5,
+    "color": "#8d9394",
+    "category": "Rocks",
+    "symbol": "rock"
+  },
+  {
+    "id": "scree",
+    "name": "Scree cluster",
+    "radius": 4.5,
+    "color": "#a5a393",
+    "category": "Rocks",
+    "symbol": "scree"
+  },
+  {
+    "id": "basalt",
+    "name": "Basalt columns",
+    "radius": 4,
+    "color": "#596269",
+    "category": "Rocks",
+    "symbol": "columns"
+  },
+  {
+    "id": "cactus",
+    "name": "Saguaro cactus",
+    "radius": 3,
+    "color": "#56805b",
+    "category": "Desert",
+    "symbol": "cactus"
+  },
+  {
+    "id": "palm",
+    "name": "Date palm",
+    "radius": 6,
+    "color": "#71884a",
+    "category": "Desert",
+    "symbol": "palm"
+  },
+  {
+    "id": "yucca",
+    "name": "Yucca",
+    "radius": 2.8,
+    "color": "#969369",
+    "category": "Desert",
+    "symbol": "fern"
+  },
+  {
+    "id": "sandstone",
+    "name": "Sandstone outcrop",
+    "radius": 6,
+    "color": "#bd8b5d",
+    "category": "Desert",
+    "symbol": "columns"
+  }
 ];
-export const objectType = id => OBJECT_TYPES.find(type => type.id === id);
+
+const typesById = new Map(OBJECT_TYPES.map(type => [type.id, type]));
+const MAX_FOOTPRINT = Math.max(...OBJECT_TYPES.map(type => type.radius)) * 5;
+export const objectType = id => typesById.get(id);
 export const isObjectTool = tool => ['scatter', 'place-object', 'erase-object'].includes(tool);
 export const objectBytes = patch => (JSON.stringify(patch).length * 2);
 
-export function validateObjects(objects) {
-  if (!Array.isArray(objects) || objects.length > MAX_OBJECTS) throw new Error('Invalid object collection');
+export function validateObjects(objects, limit = MAX_OBJECTS) {
+  if (!Array.isArray(objects) || objects.length > limit) throw new Error('Invalid object collection');
   const ids = new Set();
   for (const o of objects) {
     if (!o || typeof o.id !== 'string' || !/^[\w-]{1,64}$/.test(o.id) || ids.has(o.id) || !objectType(o.type) ||
@@ -50,12 +210,13 @@ function record(stroke, object, before) {
 }
 function changed(world) { world.objectsRevision++; world.revision++; }
 
-export function placeObject(world, stroke, x, y, { type = 'pine', scale = 1, variation = .25, scatter = false, random = Math.random } = {}) {
+export function placeObject(world, stroke, x, y, { type = 'pine', scale = 1, variation = .25, scatter = false, spacing = 0, random = Math.random } = {}) {
   if (!stroke || !objectType(type) || ![x, y, scale, variation].every(Number.isFinite) || scale < .5 || scale > 2.5 || variation < 0 || variation > .75) return false;
-  if (!world.inside(x, y) || world.sample(x, y) <= world.sea + .002 || world.objects.length >= MAX_OBJECTS) return false;
+  if (!world.inside(x, y) || world.sample(x, y) <= world.sea + .002 || world.objects.length >= objectLimit(world)) return false;
   const size = scale * (1 + (random() * 2 - 1) * variation), index = spatialIndex(world);
   const footprint = objectType(type).radius * size;
-  if (nearby(index, x, y, scatter ? footprint + 25 : 1, o => Math.hypot(o.x - x, o.y - y) < (scatter ? (footprint + objectType(o.type).radius * o.scale) * .65 : .5))) return false;
+  const clearance = scatter ? Math.max(0, spacing) * .7 : 0;
+  if (nearby(index, x, y, scatter ? Math.max(footprint + MAX_FOOTPRINT, clearance) : 1, o => Math.hypot(o.x - x, o.y - y) < (scatter ? Math.max(clearance, (footprint + objectType(o.type).radius * o.scale) * .85) : .5))) return false;
   const object = { id: crypto.randomUUID(), type, x, y, scale: size, rotation: random() * Math.PI * 2, tint: random() };
   record(stroke, object, null); world.objects.push(object); changed(world);
   indexInsert(index, object); index.revision = world.objectsRevision;
@@ -66,16 +227,19 @@ function hash(x, y, seed) { const value = Math.sin(x * 127.1 + y * 311.7 + seed)
 export function scatterObjects(world, stroke, x, y, { radius = 56, density = .5, type = 'pine', scale = 1, variation = .25, random = Math.random } = {}) {
   if (!stroke || !objectType(type) || ![x, y, radius, density, scale, variation].every(Number.isFinite) || radius <= 0 || radius > 240 || density <= 0 || density > 1 || scale < .5 || scale > 2.5) return 0;
   stroke.scatterSeed ??= random() * 10000; stroke.scatterCells ??= new Set();
-  const spacing = Math.max(4, objectType(type).radius * scale * 2) / Math.sqrt(density);
+  // Larger brushes spread scenery farther apart: counts grow roughly with radius,
+  // rather than area. Clearance also prevents repeated strokes filling every gap.
+  const brushSpread = Math.sqrt(Math.max(1, radius / 40));
+  const spacing = Math.max(4, objectType(type).radius * scale * 2) * 1.6 * brushSpread / Math.sqrt(density);
   const b = world.bounds, left = Math.floor(Math.max(b.minX, x - radius) / spacing), right = Math.floor(Math.min(b.maxX, x + radius) / spacing);
   const top = Math.floor(Math.max(b.minY, y - radius) / spacing), bottom = Math.floor(Math.min(b.maxY, y + radius) / spacing);
   let count = 0;
   for (let cy = top; cy <= bottom; cy++) for (let cx = left; cx <= right; cx++) {
-    if (world.objects.length >= MAX_OBJECTS) return count;
-    const key = `${cx},${cy}`, px = (cx + .15 + hash(cx, cy, stroke.scatterSeed) * .7) * spacing, py = (cy + .15 + hash(cx, cy, stroke.scatterSeed + 31) * .7) * spacing;
+    if (world.objects.length >= objectLimit(world)) return count;
+    const key = `${type}:${spacing}:${cx},${cy}`, px = (cx + .15 + hash(cx, cy, stroke.scatterSeed) * .7) * spacing, py = (cy + .15 + hash(cx, cy, stroke.scatterSeed + 31) * .7) * spacing;
     if (stroke.scatterCells.has(key) || Math.hypot(px - x, py - y) > radius) continue;
     stroke.scatterCells.add(key);
-    if (placeObject(world, stroke, px, py, { type, scale, variation, random, scatter: true })) count++;
+    if (placeObject(world, stroke, px, py, { type, scale, variation, random, scatter: true, spacing })) count++;
   }
   return count;
 }

@@ -1,17 +1,18 @@
 import { TILE, clamp, keyOf } from './world.js';
 
 export const MIN_RENDER_DISTANCE = 2;
-export const MAX_RENDER_DISTANCE = 12;
+export const MAX_RENDER_DISTANCE = 2 ** 25 / TILE;
+export function maximumRenderDistance(bounds) { return Math.max(MIN_RENDER_DISTANCE, Math.ceil(Math.max(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY) / TILE)); }
 export const DEFAULT_RENDER_DISTANCE = 6;
 
-// Distance is a tile radius. Bound the working set independently of world size.
-export function normalizeRenderDistance(value) {
+// Distance is a tile radius; the world-sized maximum reaches every tile from any focus.
+export function normalizeRenderDistance(value, maximum = MAX_RENDER_DISTANCE) {
   const number = Number(value);
-  return Number.isFinite(number) && value !== null ? clamp(Math.round(number), MIN_RENDER_DISTANCE, MAX_RENDER_DISTANCE) : DEFAULT_RENDER_DISTANCE;
+  return Number.isFinite(number) && value !== null ? clamp(Math.round(number), MIN_RENDER_DISTANCE, maximum) : Math.min(DEFAULT_RENDER_DISTANCE, maximum);
 }
 
 export function terrainWindow(bounds, targetX, targetY, distance) {
-  const radius = normalizeRenderDistance(distance);
+  const radius = normalizeRenderDistance(distance, maximumRenderDistance(bounds));
   const tx = Math.floor(clamp(targetX, bounds.minX, bounds.maxX - 1) / TILE);
   const ty = Math.floor(clamp(targetY, bounds.minY, bounds.maxY - 1) / TILE);
   const visible = {

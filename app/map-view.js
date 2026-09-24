@@ -3,6 +3,7 @@ import { BIOME_COUNT, surfaceColor } from './biomes.js';
 import { radians, rotate2D, sunDirection, hillshade, wrapDegrees } from './view-math.js';
 import { riverSections } from './rivers.js';
 import { drawMapObjects } from './object-map.js';
+import { brushPreviewStamp } from './brush-preview.js';
 export class MapView {
   constructor(canvas, world) {
     this.canvas = canvas; this.ctx = canvas.getContext('2d', { alpha: false }); this.world = world;
@@ -20,6 +21,7 @@ export class MapView {
   }
   fit() { const b = this.world.bounds, c = Math.abs(Math.cos(this.rotation)), s = Math.abs(Math.sin(this.rotation)), bw = b.maxX - b.minX, bh = b.maxY - b.minY; this.center = { x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2 }; this.fitPending = !(this.width > 0 && this.height > 0); if (!this.fitPending) this.zoom = Math.max(.000001, Math.min(Math.max(1, this.width - 70) / (bw * c + bh * s), Math.max(1, this.height - 100) / (bh * c + bw * s))); this.needsDraw = true; }
   setRotation(degrees) { this.rotation = radians(wrapDegrees(degrees)); this.needsDraw = true; }
+  setBrushPreview(preview) { this.brushPreview = preview; this.previewStamp = preview ? brushPreviewStamp(preview.mask) : null; this.needsDraw = true; }
   screenDelta(x, y) { const p = rotate2D(x, y, -this.rotation); return { x: p.x / this.zoom, y: p.y / this.zoom }; }
   reset() { this.failed = false; this.cache.clear(); this.pending.clear(); this.cursor = null; this.resize(); this.fit(); }
   point(event) { if (!(this.zoom > 0) || !Number.isFinite(this.zoom) || !this.width || !this.height) return null; const r = this.canvas.getBoundingClientRect(), p = this.screenDelta(event.clientX - r.left - this.width / 2, event.clientY - r.top - this.height / 2); return { x: p.x + this.center.x, y: p.y + this.center.y }; }
@@ -73,7 +75,7 @@ export class MapView {
     for (let y = Math.ceil(minY / spacing) * spacing; y <= maxY; y += spacing) { c.moveTo(px(minX), py(y)); c.lineTo(px(maxX), py(y)); } c.stroke(); c.restore();
     c.strokeStyle = '#70919388'; c.lineWidth = 1; c.setLineDash([5, 5]); c.strokeRect(px(b.minX), py(b.minY), (b.maxX - b.minX) * z, (b.maxY - b.minY) * z); c.setLineDash([]);
     if (this.cursor) {
-      const { x, y, radius } = this.cursor; c.beginPath(); c.arc(px(x), py(y), radius * z, 0, Math.PI * 2); c.fillStyle = '#dcebad12'; c.fill(); c.strokeStyle = '#e2edbb'; c.lineWidth = 1.3; c.stroke(); c.beginPath(); c.moveTo(px(x) - 4, py(y)); c.lineTo(px(x) + 4, py(y)); c.moveTo(px(x), py(y) - 4); c.lineTo(px(x), py(y) + 4); c.stroke();
+      const { x, y, radius } = this.cursor; if (this.brushPreview && this.previewStamp) { c.save(); c.globalAlpha = this.brushPreview.opacity ?? .36; c.translate(px(x), py(y)); c.rotate(this.brushPreview.rotation || 0); c.drawImage(this.previewStamp, -radius * z, -radius * z, radius * z * 2, radius * z * 2); c.restore(); } c.beginPath(); c.arc(px(x), py(y), radius * z, 0, Math.PI * 2); c.fillStyle = '#dcebad12'; c.fill(); c.strokeStyle = this.brushPreview?.mask ? '#e2edbb88' : '#e2edbb'; c.lineWidth = 1.3; c.stroke(); c.beginPath(); c.moveTo(px(x) - 4, py(y)); c.lineTo(px(x) + 4, py(y)); c.moveTo(px(x), py(y) - 4); c.lineTo(px(x), py(y) + 4); c.stroke();
     }
     c.restore();
     document.querySelector('#map-zoom').textContent = `${Math.round(z * 100)}%`;

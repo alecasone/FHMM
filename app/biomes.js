@@ -10,6 +10,7 @@ export const BIOMES = [
   { id: 'wetland', name: 'Wetland', color: '#616a3e', low: [63, 78, 46], high: [108, 115, 64] },
   { id: 'rock', name: 'Rock', color: '#99948a', low: [105, 102, 93], high: [157, 150, 133] },
   { id: 'snow', name: 'Snow', color: '#e9f1f4', low: [202, 218, 225], high: [245, 248, 244] },
+  { id: 'water', name: 'Water', color: '#347f96', low: [30, 79, 104], high: [68, 143, 161] },
 ];
 export const BIOME_COUNT = BIOMES.length;
 const clamp01 = n => Math.max(0, Math.min(1, n));
@@ -45,8 +46,8 @@ export function surfaceColor(height, sea, x, y, slope, paint, offset = 0, enable
       const weight = weights[offset + b]; if (!weight) continue;
       const biome = BIOMES[b];
       let painted = blend(biome.low[c], biome.high[c], b === 9 ? .5 + variation * .5 : variation);
-      // Snow clings to shelves; steep faces expose rock. Vegetation follows the same rule.
-      if (b !== 8) painted = blend(painted, rockValue, cliff * (b === 9 ? .82 : b === 5 ? .5 : .86));
+      // Snow and vegetation follow the slope; painted water keeps its color on steep ground.
+      if (b !== 8 && b !== 10) painted = blend(painted, rockValue, cliff * (b === 9 ? .82 : b === 5 ? .5 : .86));
       value += painted * weight / 255;
     }
     rgb[c] = Math.max(0, Math.min(255, value * (.965 + grain * .07)));

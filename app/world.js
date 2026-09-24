@@ -56,7 +56,25 @@ export class World {
     if (!tile) { tile = new Uint8Array(TILE * TILE * BIOME_COUNT); this.biomes.set(key, tile); }
     const index = (y - ty * TILE) * TILE + x - tx * TILE, offset = index * BIOME_COUNT;
     const a = Math.min(1, amount), before = tile.slice(offset, offset + BIOME_COUNT); let total = 0, largest = 0;
-    for (let b = 0; b < BIOME_COUNT; b++) { let n = Math.round(tile[offset + b] * (1 - a) + (b === biome ? 255 * a : 0)); if (b === biome && n === before[b] && n < 255) n++; if (biome === -1 && n === before[b] && n > 0) n--; tile[offset + b] = n; total += n; if (n > tile[offset + largest]) largest = b; }
+    // Retain sub-byte paint during a stroke instead of forcing each faint dab to add a whole byte.
+    let precise = stroke?.biomePrecision?.get(key);
+    if (stroke && !precise && a < 1 / 255) {
+      stroke.biomePrecision ??= new Map();
+      precise = Float32Array.from(tile); stroke.biomePrecision.set(key, precise);
+    }
+    for (let b = 0; b < BIOME_COUNT; b++) {
+      const value = (precise ? precise[offset + b] : tile[offset + b]) * (1 - a) + (b === biome ? 255 * a : 0);
+      let n = Math.round(value);
+      if (a >= 1 / 255 && b === biome && n === before[b] && n < 255) n++;
+      if (a >= 1 / 255 && biome === -1 && n === before[b] && n > 0) n--;
+      if (precise) precise[offset + b] = n === Math.round(value) ? value : n;
+      tile[offset + b] = n; total += n;
+      if (n > tile[offset + largest]) largest = b;
+    }
+    if (precise) {
+      let sum = 0; for (let b = 0; b < BIOME_COUNT; b++) sum += precise[offset + b];
+      if (sum > 255) for (let b = 0; b < BIOME_COUNT; b++) precise[offset + b] *= 255 / sum;
+    }
     if (total > 255) tile[offset + largest] -= total - 255;
     if (before.every((v, b) => v === tile[offset + b])) return;
     if (stroke) { let changes = stroke.biomeChanges.get(key); if (!changes) { changes = new Map(); stroke.biomeChanges.set(key, changes); } if (!changes.has(index)) changes.set(index, before); }
@@ -160,15 +178,16 @@ export function dab(world, stroke, cx, cy, options) {
   const left = Math.max(b.minX, Math.floor(cx - radius)), right = Math.min(b.maxX - 1, Math.ceil(cx + radius));
   const top = Math.max(b.minY, Math.floor(cy - radius)), bottom = Math.min(b.maxY - 1, Math.ceil(cy + radius));
   if (left > right || top > bottom) return;
-  // An integral image keeps the 5x5 smoothing kernel O(1) per edited sample.
+  // Summed areas keep both fine smoothing and broad melding O(1) per edited sample.
   // All values come from the pre-dab snapshot, avoiding directional bias.
   let integral, stride;
-  if (tool === 'smooth') {
-    const width = right - left + 5, height = bottom - top + 5;
+  const meld = tool === 'meld', kernel = meld ? clamp(Math.round(radius * .3), 3, 64) : 2;
+  if (tool === 'smooth' || meld) {
+    const width = right - left + kernel * 2 + 1, height = bottom - top + kernel * 2 + 1;
     stride = width + 1; integral = new Float64Array(stride * (height + 1));
     for (let y = 0; y < height; y++) {
       let row = 0;
-      for (let x = 0; x < width; x++) { row += world.get(left - 2 + x, top - 2 + y); integral[(y + 1) * stride + x + 1] = integral[y * stride + x + 1] + row; }
+      for (let x = 0; x < width; x++) { const sx = left - kernel + x, sy = top - kernel + y; row += meld ? world.get(clamp(sx, b.minX, b.maxX - 1), clamp(sy, b.minY, b.maxY - 1)) : world.get(sx, sy); integral[(y + 1) * stride + x + 1] = integral[y * stride + x + 1] + row; }
     }
   }
   for (let y = top; y <= bottom; y++) for (let x = left; x <= right; x++) {
@@ -176,7 +195,7 @@ export function dab(world, stroke, cx, cy, options) {
     if (distance >= 1) continue;
     const falloff = Math.pow(1 - distance * distance, 2);
     let weight = falloff;
-    if (mask) {
+    if (mask && !meld) {
       const u = (dx * cos + dy * sin + 1) * .5, v = (-dx * sin + dy * cos + 1) * .5;
       const mx = clamp(Math.round(u * (mask.size - 1)), 0, mask.size - 1), my = clamp(Math.round(v * (mask.size - 1)), 0, mask.size - 1);
       weight *= mask.data[my * mask.size + mx] / 65535;
@@ -194,10 +213,12 @@ export function dab(world, stroke, cx, cy, options) {
     } else if (tool === 'raise' || tool === 'lower') value += amount * .055 * (tool === 'raise' ? 1 : -1);
     if (tool === 'flatten') value += (target - current) * Math.min(1, amount * .38);
     if (tool === 'stamp' && !blending) value = Math.max(current, target + weight * strength * .8);
-    if (tool === 'smooth') {
-      const ix = x - left, iy = y - top;
-      const sum = integral[(iy + 5) * stride + ix + 5] - integral[iy * stride + ix + 5] - integral[(iy + 5) * stride + ix] + integral[iy * stride + ix];
-      value += (sum / 25 - current) * Math.min(1, amount * .65);
+    if (tool === 'smooth' || meld) {
+      const ix = x - left, iy = y - top, diameter = kernel * 2 + 1;
+      const sum = integral[(iy + diameter) * stride + ix + diameter] - integral[iy * stride + ix + diameter] - integral[(iy + diameter) * stride + ix] + integral[iy * stride + ix];
+      // Broad averaging lowers peaks and fills cuts together; exponential blending cannot overshoot.
+      const influence = meld ? 1 - Math.exp(-Math.max(0, amount) * 3) : Math.min(1, amount * .65);
+      value += (sum / (diameter * diameter) - current) * influence;
     }
     world.set(x, y, value, stroke);
   }

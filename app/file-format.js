@@ -1,14 +1,15 @@
 import { World, History, TILE, metadataBytes } from './world.js';
 import { validateRivers } from './rivers.js';
-import { validateObjects, objectBytes, MAX_OBJECTS } from './objects.js';
+import { validateObjects, objectBytes, objectLimit } from './objects.js';
 import { BIOMES, BIOME_COUNT } from './biomes.js';
 const encoder = new TextEncoder(), decoder = new TextDecoder();
-const MAGIC = 'FMM4';
+const MAGIC = 'FMM5';
+const LEGACY_BIOME_IDS = ['grassland', 'forest', 'rainforest', 'taiga', 'savanna', 'desert', 'tundra', 'wetland', 'rock', 'snow'];
 const MAX_FILE_BYTES = 1024 * 1024 * 1024;
 export function encodeWorld(world, history) {
   const chunks = []; let offset = 0;
   const append = array => { const ref = { offset, length: array.length }; chunks.push(new Uint8Array(array.buffer, array.byteOffset, array.byteLength)); offset += array.byteLength; return ref; };
-  const metadata = { version: 4, tileSize: TILE, name: world.name, bounds: world.bounds, sea: world.sea, ocean: world.ocean, biomesVisible: world.biomesVisible, biomeIds: BIOMES.map(b => b.id), rivers: world.rivers, riversVisible: world.riversVisible, objects: world.objects, objectsVisible: world.objectsVisible,
+  const metadata = { version: 5, tileSize: TILE, name: world.name, bounds: world.bounds, sea: world.sea, ocean: world.ocean, biomesVisible: world.biomesVisible, biomeIds: BIOMES.map(b => b.id), rivers: world.rivers, riversVisible: world.riversVisible, objects: world.objects, objectsVisible: world.objectsVisible,
     tiles: [...world.tiles].map(([key, data]) => ({ key, data: append(data) })),
     biomes: [...world.biomes].filter(([, data]) => data.some(v => v)).map(([key, data]) => ({ key, data: append(data) })),
     history: { cursor: history.cursor, trimmed: history.trimmed, entries: history.entries.map(entry => ({ label: entry.label, time: entry.time, reset: entry.reset, before: entry.before, after: entry.after, objects: entry.objects, patches: entry.patches?.map(p => ({ key: p.key, channel: p.channel ?? 'height', indices: append(p.indices), before: append(p.before), after: append(p.after) })) })) }
@@ -32,18 +33,22 @@ export async function decodeWorld(blob) {
   if (blob.size > MAX_FILE_BYTES || blob.size < 8) throw new Error('World file is too large or incomplete');
   const bytes = new Uint8Array(await blob.arrayBuffer());
   const magic = decoder.decode(bytes.subarray(0, 4));
-  if (!['FMM1', 'FMM2', 'FMM3', MAGIC].includes(magic)) throw new Error('This is not an FMM world file');
+  if (!['FMM1', 'FMM2', 'FMM3', 'FMM4', MAGIC].includes(magic)) throw new Error('This is not an FMM world file');
   const length = new DataView(bytes.buffer).getUint32(4, true), start = 8 + length;
   // River history lives in metadata. A full 256 MiB retained-history budget
   // can legitimately encode more than 64 MiB of JSON.
   if (length > 192 * 1024 * 1024 || start > bytes.length) throw new Error('World file header is damaged');
   const meta = JSON.parse(decoder.decode(bytes.subarray(8, start)));
-  if (![1, 2, 3, 4].includes(meta.version) || magic !== `FMM${meta.version}` || meta.tileSize !== TILE || !validateBounds(meta.bounds) || !Array.isArray(meta.tiles) || meta.tiles.length > 16000) throw new Error('Unsupported or invalid world file');
+  if (![1, 2, 3, 4, 5].includes(meta.version) || magic !== `FMM${meta.version}` || meta.tileSize !== TILE || !validateBounds(meta.bounds) || !Array.isArray(meta.tiles) || meta.tiles.length > 16000) throw new Error('Unsupported or invalid world file');
   validateMeta({ sea: meta.sea, ocean: meta.ocean });
   const world = new World(); world.name = String(meta.name || 'Untitled world').slice(0, 70); world.bounds = meta.bounds; world.sea = meta.sea; world.ocean = meta.ocean;
-  if (meta.version >= 2) { if (JSON.stringify(meta.biomeIds) !== JSON.stringify(BIOMES.map(b => b.id))) throw new Error('Unsupported biome palette'); validateMeta({ biomesVisible: meta.biomesVisible }); world.biomesVisible = meta.biomesVisible; }
+  if (meta.version >= 2) {
+    const expectedBiomes = meta.version >= 5 ? BIOMES.map(b => b.id) : LEGACY_BIOME_IDS;
+    if (JSON.stringify(meta.biomeIds) !== JSON.stringify(expectedBiomes)) throw new Error('Unsupported biome palette');
+    validateMeta({ biomesVisible: meta.biomesVisible }); world.biomesVisible = meta.biomesVisible;
+  }
   if (meta.version >= 3) { validateMeta({ rivers: meta.rivers, riversVisible: meta.riversVisible }); world.rivers = meta.rivers; world.riversVisible = meta.riversVisible; }
-  if (meta.version >= 4) { validateObjects(meta.objects); validateMeta({ objectsVisible: meta.objectsVisible }); world.objects = meta.objects; world.objectsVisible = meta.objectsVisible; }
+  if (meta.version >= 4) { validateObjects(meta.objects, objectLimit(world)); validateMeta({ objectsVisible: meta.objectsVisible }); world.objects = meta.objects; world.objectsVisible = meta.objectsVisible; }
   let allocated = 0;
   const read = (ref, Type, maxLength) => {
     if (!ref || !Number.isSafeInteger(ref.offset) || !Number.isSafeInteger(ref.length) || ref.offset < 0 || ref.length < 0 || ref.length > maxLength || ref.offset + ref.length * Type.BYTES_PER_ELEMENT > bytes.length - start) throw new Error('World contains damaged terrain data');
@@ -51,7 +56,19 @@ export async function decodeWorld(blob) {
     return new Type(bytes.slice(start + ref.offset, start + ref.offset + ref.length * Type.BYTES_PER_ELEMENT).buffer);
   };
   const readHeights = (ref, maxLength) => { const data = read(ref, Float32Array, maxLength); if (data.some(n => !Number.isFinite(n) || n < -1 || n > 2)) throw new Error('Invalid terrain heights'); return data; };
-  const readBiomes = ref => { const data = read(ref, Uint8Array, TILE * TILE * BIOME_COUNT); if (data.length % BIOME_COUNT) throw new Error('Incomplete biome weights'); for (let i = 0; i < data.length; i += BIOME_COUNT) { let sum = 0; for (let b = 0; b < BIOME_COUNT; b++) sum += data[i + b]; if (sum > 255) throw new Error('Invalid biome weights'); } return data; };
+  const readBiomes = ref => {
+    const stride = meta.version >= 5 ? BIOME_COUNT : LEGACY_BIOME_IDS.length;
+    const data = read(ref, Uint8Array, TILE * TILE * stride);
+    if (data.length % stride) throw new Error('Incomplete biome weights');
+    for (let i = 0; i < data.length; i += stride) { let sum = 0; for (let b = 0; b < stride; b++) sum += data[i + b]; if (sum > 255) throw new Error('Invalid biome weights'); }
+    if (stride === BIOME_COUNT) return data;
+    const migratedLength = data.length / stride * BIOME_COUNT;
+    allocated += migratedLength;
+    if (allocated > MAX_FILE_BYTES) throw new Error("World exceeds the supported import memory budget");
+    const migrated = new Uint8Array(migratedLength);
+    for (let i = 0, sample = 0; i < data.length; i += stride, sample++) migrated.set(data.subarray(i, i + stride), sample * BIOME_COUNT);
+    return migrated;
+  };
   for (const tile of meta.tiles) { if (!validKey(tile.key) || world.tiles.has(tile.key)) throw new Error('Invalid terrain tile'); const values = readHeights(tile.data, TILE * TILE); if (values.length !== TILE * TILE) throw new Error('Incomplete terrain tile'); world.tiles.set(tile.key, values); }
   if (meta.version >= 2) {
     if (!Array.isArray(meta.biomes) || meta.biomes.length > 16000) throw new Error('Invalid biome tiles');
@@ -88,11 +105,15 @@ export async function decodeWorld(blob) {
   // records must not replay into duplicate IDs or exceed the object budget.
   if (meta.version >= 4) for (const forward of [false, true]) {
     const ids = new Set(world.objects.map(o => o.id));
+    let replayBounds = world.bounds;
     const entries = forward ? history.entries.slice(h.cursor) : history.entries.slice(0, h.cursor).reverse();
-    for (const entry of entries) if (entry.objects) {
-      for (const o of forward ? entry.objects.removed : entry.objects.added) if (!ids.delete(o.id)) throw new Error('Inconsistent object history');
-      for (const o of forward ? entry.objects.added : entry.objects.removed) { if (ids.has(o.id)) throw new Error('Duplicate object in history'); ids.add(o.id); }
-      if (ids.size > MAX_OBJECTS) throw new Error('Object history exceeds the object budget');
+    for (const entry of entries) {
+      replayBounds = (forward ? entry.after : entry.before)?.bounds ?? replayBounds;
+      if (entry.objects) {
+        for (const o of forward ? entry.objects.removed : entry.objects.added) if (!ids.delete(o.id)) throw new Error('Inconsistent object history');
+        for (const o of forward ? entry.objects.added : entry.objects.removed) { if (ids.has(o.id)) throw new Error('Duplicate object in history'); ids.add(o.id); }
+      }
+      if (ids.size > objectLimit({ bounds: replayBounds })) throw new Error('Object history exceeds the map sample count');
     }
   }
   history.cursor = h.cursor; history.trimmed = Number.isSafeInteger(h.trimmed) && h.trimmed >= 0 ? h.trimmed : 0; world.invalidate();
