@@ -318,7 +318,7 @@ async function loadBrushes() {
   grid.querySelectorAll('[data-heightmap-brush]').forEach(button => button.remove());
   for (const brush of brushes) {
     const button = document.createElement('button');
-    button.className = 'brush'; button.dataset.brush = brush.id; button.dataset.category = brush.category; button.dataset.heightmapBrush = 'true'; button.title = brush.name;
+    button.className = 'brush'; button.dataset.brush = brush.id; button.dataset.category = brush.category; button.dataset.heightmapBrush = 'true'; button.title = brush.name + ' · ' + (brush.width ?? brush.size) + ' × ' + (brush.height ?? brush.size);
     const img = document.createElement('img'); img.src = '/brushes/' + brush.id + '.png'; img.alt = ''; img.loading = 'lazy';
     const label = document.createElement('span'); label.textContent = brush.name;
     button.append(img, label); grid.append(button);
@@ -329,7 +329,7 @@ async function loadBrushes() {
     if (!result.ok) throw new Error('Selected heightmap brush could not load');
     const data = new Uint16Array(await result.arrayBuffer());
     if (request !== brushManifestRequest) return;
-    if (selectionVersion === brushSelectionRequest && activeBrush === preserveBrush) { mask = { size: 256, data }; cursor(currentPoint); }
+    if (selectionVersion === brushSelectionRequest && activeBrush === preserveBrush) { mask = loadedBrushMask(brushes.find(brush => brush.id === preserveBrush), data); cursor(currentPoint); }
   } else if (!stillAvailable && selectionVersion === brushSelectionRequest && activeBrush === preserveBrush) {
     activeBrush = 'round'; mask = null; $('#current-brush').textContent = 'Soft round'; cursor(currentPoint);
   }
@@ -347,7 +347,7 @@ async function loadBrushes() {
       if (brush) {
         const result = await fetch('/brushes/' + brush.id + '.bin');
         if (!result.ok) throw new Error('Brush could not load');
-        nextMask = { size: brush.size, data: new Uint16Array(await result.arrayBuffer()) };
+        nextMask = loadedBrushMask(brush, new Uint16Array(await result.arrayBuffer()));
       }
       if (version !== brushSelectionRequest) return;
       mask = nextMask; activeBrush = button.dataset.brush; cursor(currentPoint);
@@ -358,6 +358,11 @@ async function loadBrushes() {
   categorySelect.onchange = event => document.querySelectorAll('[data-brush]').forEach(button => {
     button.hidden = button.dataset.brush !== 'round' && event.target.value !== 'all' && button.dataset.category !== event.target.value;
   });
+}
+function loadedBrushMask(brush, data) {
+  const width = brush.width ?? brush.size, height = brush.height ?? brush.size;
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1 || data.length !== width * height) throw new Error('Heightmap dimensions do not match its data. Scan the brush library again.');
+  return { width, height, size: width, data };
 }
 $('#refresh-brushes').onclick = async event => {
   const button = event.currentTarget, oldCount = brushCatalog.length;

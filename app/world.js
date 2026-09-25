@@ -232,8 +232,9 @@ export function dab(world, stroke, cx, cy, options) {
     let weight = falloff;
     if (mask && !meld) {
       const u = (dx * cos + dy * sin + 1) * .5, v = (-dx * sin + dy * cos + 1) * .5;
-      const mx = clamp(Math.round(u * (mask.size - 1)), 0, mask.size - 1), my = clamp(Math.round(v * (mask.size - 1)), 0, mask.size - 1);
-      weight *= mask.data[my * mask.size + mx] / 65535;
+      const width = mask.width ?? mask.size, height = mask.height ?? mask.size;
+      const mx = clamp(Math.round(u * (width - 1)), 0, width - 1), my = clamp(Math.round(v * (height - 1)), 0, height - 1);
+      weight *= mask.data[my * width + mx] / 65535;
     }
     const current = world.get(x, y), amount = strength * weight * dt;
     if (tool === 'paint' || tool === 'erase') {

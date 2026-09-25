@@ -2,9 +2,7 @@ import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { PNG } from 'pngjs';
 
-const MASK_SIZE = 256;
 const THUMB_SIZE = 96;
-const MAX_IMAGE_PIXELS = 16_000_000;
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 
 export function brushId(filename) {
@@ -20,30 +18,28 @@ export function brushCategory(name) {
 export function prepareHeightmap(source, { id = brushId('heightmap.png'), name = 'Heightmap', category = 'Heightmaps' } = {}) {
   if (source.length < 33 || !source.subarray(0, 8).equals(PNG_SIGNATURE) || source.readUInt32BE(8) !== 13) throw new Error('not a valid PNG image');
   const width = source.readUInt32BE(16), height = source.readUInt32BE(20);
-  if (!width || !height || width * height > MAX_IMAGE_PIXELS) throw new Error('PNG must contain at most 16 million pixels');
+  if (!width || !height || !Number.isSafeInteger(width * height * 2)) throw new Error('Invalid PNG dimensions');
   const image = PNG.sync.read(source, { skipRescale: true });
   const maxSample = image.depth === 16 ? 65535 : 255;
-  const mask = Buffer.alloc(MASK_SIZE * MASK_SIZE * 2);
+  const mask = Buffer.alloc(width * height * 2);
   const sample = (x, y) => {
     const offset = (y * image.width + x) * 4;
     return Math.round((.2126 * image.data[offset] + .7152 * image.data[offset + 1] + .0722 * image.data[offset + 2]) / maxSample * 65535);
   };
-  for (let y = 0; y < MASK_SIZE; y++) for (let x = 0; x < MASK_SIZE; x++) {
-    const sx = Math.min(width - 1, Math.floor((x + .5) * width / MASK_SIZE));
-    const sy = Math.min(height - 1, Math.floor((y + .5) * height / MASK_SIZE));
-    mask.writeUInt16LE(sample(sx, sy), (y * MASK_SIZE + x) * 2);
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    mask.writeUInt16LE(sample(x, y), (y * width + x) * 2);
   }
 
   const thumbnail = new PNG({ width: THUMB_SIZE, height: THUMB_SIZE });
   for (let y = 0; y < THUMB_SIZE; y++) for (let x = 0; x < THUMB_SIZE; x++) {
-    const value = mask.readUInt16LE((Math.floor(y * MASK_SIZE / THUMB_SIZE) * MASK_SIZE + Math.floor(x * MASK_SIZE / THUMB_SIZE)) * 2) / 65535;
+    const value = mask.readUInt16LE((Math.floor(y * height / THUMB_SIZE) * width + Math.floor(x * width / THUMB_SIZE)) * 2) / 65535;
     const offset = (y * THUMB_SIZE + x) * 4;
     thumbnail.data[offset] = 28 + value * 199;
     thumbnail.data[offset + 1] = 38 + value * 198;
     thumbnail.data[offset + 2] = 42 + value * 192;
     thumbnail.data[offset + 3] = 255;
   }
-  return { entry: { id, name, category, size: MASK_SIZE }, mask, thumbnail: PNG.sync.write(thumbnail) };
+  return { entry: { id, name, category, size: width, width, height }, mask, thumbnail: PNG.sync.write(thumbnail) };
 }
 
 export function createBrushLibrary({ sourceDirectory, builtInDirectory, generatedDirectory }) {
@@ -70,16 +66,15 @@ export function createBrushLibrary({ sourceDirectory, builtInDirectory, generate
         const info = await stat(sourcePath);
         if (!info.isFile()) continue;
         const signature = filename + ':' + info.size + ':' + info.mtimeMs;
-        if (prepared.get(id) !== signature) {
-          if (info.size > 128 * 1024 * 1024) throw new Error('file is larger than 128 MB');
+        if (prepared.get(id)?.signature !== signature) {
           const result = prepareHeightmap(await readFile(sourcePath), { id, name: displayName, category: brushCategory(displayName) });
           await Promise.all([
             writeFile(path.join(generatedDirectory, id + '.bin'), result.mask),
             writeFile(path.join(generatedDirectory, id + '.png'), result.thumbnail),
           ]);
-          prepared.set(id, signature);
+          prepared.set(id, { signature, entry: result.entry });
         }
-        found.push({ id, name: displayName, category: brushCategory(displayName), size: MASK_SIZE });
+        found.push(prepared.get(id).entry);
       } catch (error) {
         console.warn('Skipping heightmap ' + filename + ': ' + error.message);
       }
