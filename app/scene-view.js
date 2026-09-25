@@ -81,7 +81,7 @@ export class SceneView {
       pos.setY(i, h * this.relief);
       const left = this.world.get(wx - 1, wy), right = this.world.get(wx + 1, wy), up = this.world.get(wx, wy - 1), down = this.world.get(wx, wy + 1);
       const ptx = Math.floor(wx / TILE), pty = Math.floor(wy / TILE), paint = this.world.biomes.get(keyOf(ptx, pty)), offset = ((wy - pty * TILE) * TILE + wx - ptx * TILE) * BIOME_COUNT;
-      const rgb = this.world.ocean && h < this.world.sea ? terrainColor(h, this.world.sea, true) : surfaceColor(h, this.world.sea, wx, wy, Math.hypot(left - right, up - down) * 50, paint, offset, this.world.biomesVisible);
+      const rgb = this.world.ocean && h < this.world.sea ? terrainColor(h, this.world.sea, true) : surfaceColor(h, this.world.sea, wx, wy, Math.hypot(left - right, up - down) * 50, paint, offset, this.world.biomesVisible, this.world.colors.get(keyOf(ptx, pty)), offset / BIOME_COUNT * 4);
       color.setRGB(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255, THREE.SRGBColorSpace); col.setXYZ(i, color.r, color.g, color.b);
       // Neighbour samples give identical normals on shared edges, including after edits.
       const nx = (left - right) * this.relief, nz = (up - down) * this.relief, length = Math.hypot(nx, 2, nz); normals.setXYZ(i, nx / length, 2 / length, nz / length);

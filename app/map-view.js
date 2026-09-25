@@ -33,7 +33,7 @@ export class MapView {
       const wx = tx * TILE + x, wy = ty * TILE + y, index = y * TILE + x, h = samples?.[index] ?? FLOOR;
       const left = x ? (samples?.[index - 1] ?? FLOOR) : world.get(wx - 1, wy), right = x < TILE - 1 ? (samples?.[index + 1] ?? FLOOR) : world.get(wx + 1, wy);
       const up = y ? (samples?.[index - TILE] ?? FLOOR) : world.get(wx, wy - 1), down = y < TILE - 1 ? (samples?.[index + TILE] ?? FLOOR) : world.get(wx, wy + 1);
-      const color = world.ocean && h < world.sea ? terrainColor(h, world.sea, true) : surfaceColor(h, world.sea, wx, wy, Math.hypot(left - right, up - down) * 50, paint, index * BIOME_COUNT, world.biomesVisible);
+      const color = world.ocean && h < world.sea ? terrainColor(h, world.sea, true) : surfaceColor(h, world.sea, wx, wy, Math.hypot(left - right, up - down) * 50, paint, index * BIOME_COUNT, world.biomesVisible, world.colors.get(key), index * 4);
       let light = hillshade(left, right, up, down, sun);
       if (world.ocean && h < world.sea) light = 1;
       if (this.contours && h > world.sea && h % .055 < .0018) light *= .76;
@@ -56,7 +56,7 @@ export class MapView {
     c.fillStyle = this.world.ocean ? `rgb(${terrainColor(-.18, this.world.sea, true).join(',')})` : '#36463b'; c.fillRect(px(b.minX), py(b.minY), (b.maxX - b.minX) * z, (b.maxY - b.minY) * z);
     c.save(); c.beginPath(); c.rect(px(b.minX), py(b.minY), (b.maxX - b.minX) * z, (b.maxY - b.minY) * z); c.clip();
     let rendered = 0; const visible = new Set();
-    for (const key of new Set([...this.world.tiles.keys(), ...this.world.biomes.keys()])) {
+    for (const key of new Set([...this.world.tiles.keys(), ...this.world.biomes.keys(), ...this.world.colors.keys()])) {
       const [tx, ty] = key.split(',').map(Number), x = px(tx * TILE), y = py(ty * TILE), size = TILE * z;
       if (x + size < w / 2 - halfW || x > w / 2 + halfW || y + size < h / 2 - halfH || y > h / 2 + halfH) continue;
       visible.add(key);

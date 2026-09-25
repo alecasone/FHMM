@@ -225,7 +225,7 @@ export function placeObject(world, stroke, x, y, { type = 'pine', scale = 1, var
 
 function hash(x, y, seed) { const value = Math.sin(x * 127.1 + y * 311.7 + seed) * 43758.5453; return value - Math.floor(value); }
 export function scatterObjects(world, stroke, x, y, { radius = 56, density = .5, type = 'pine', scale = 1, variation = .25, random = Math.random } = {}) {
-  if (!stroke || !objectType(type) || ![x, y, radius, density, scale, variation].every(Number.isFinite) || radius <= 0 || radius > 240 || density <= 0 || density > 1 || scale < .5 || scale > 2.5) return 0;
+  if (!stroke || !objectType(type) || ![x, y, radius, density, scale, variation].every(Number.isFinite) || radius <= 0 || radius > 2048 || density <= 0 || density > 1 || scale < .5 || scale > 2.5) return 0;
   stroke.scatterSeed ??= random() * 10000; stroke.scatterCells ??= new Set();
   // Larger brushes spread scenery farther apart: counts grow roughly with radius,
   // rather than area. Clearance also prevents repeated strokes filling every gap.
@@ -245,7 +245,7 @@ export function scatterObjects(world, stroke, x, y, { radius = 56, density = .5,
 }
 
 export function eraseObjects(world, stroke, x, y, radius, type = 'all') {
-  if (!stroke || ![x, y, radius].every(Number.isFinite) || radius <= 0 || radius > 240) return 0;
+  if (!stroke || ![x, y, radius].every(Number.isFinite) || radius <= 0 || radius > 2048) return 0;
   const removed = new Set();
   nearby(spatialIndex(world), x, y, radius, o => {
     if ((type === 'all' || type === o.type) && Math.hypot(o.x - x, o.y - y) <= radius) { record(stroke, o, o); removed.add(o.id); }

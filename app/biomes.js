@@ -21,7 +21,7 @@ export function noise(x, y) {
   const ix = Math.floor(x), iy = Math.floor(y), fx = smoothstep(0, 1, x - ix), fy = smoothstep(0, 1, y - iy);
   return blend(blend(hash(ix, iy), hash(ix + 1, iy), fx), blend(hash(ix, iy + 1), hash(ix + 1, iy + 1), fx), fy);
 }
-export function surfaceColor(height, sea, x, y, slope, paint, offset = 0, enabled = true) {
+export function surfaceColor(height, sea, x, y, slope, paint, offset = 0, enabled = true, colors = null, colorOffset = 0) {
   const elevation = height - sea;
   const patch = noise(x * .026, y * .026), grain = hash(Math.floor(x), Math.floor(y));
   const variation = clamp01(patch * .75 + noise(x * .19, y * .19) * .25);
@@ -50,6 +50,7 @@ export function surfaceColor(height, sea, x, y, slope, paint, offset = 0, enable
       if (b !== 8 && b !== 10) painted = blend(painted, rockValue, cliff * (b === 9 ? .82 : b === 5 ? .5 : .86));
       value += painted * weight / 255;
     }
+    if (enabled && colors) value = blend(value, colors[colorOffset + c], colors[colorOffset + 3] / 255);
     rgb[c] = Math.max(0, Math.min(255, value * (.965 + grain * .07)));
   }
   return rgb;

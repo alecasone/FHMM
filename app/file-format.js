@@ -3,14 +3,15 @@ import { validateRivers } from './rivers.js';
 import { validateObjects, objectBytes, objectLimit } from './objects.js';
 import { BIOMES, BIOME_COUNT } from './biomes.js';
 const encoder = new TextEncoder(), decoder = new TextDecoder();
-const MAGIC = 'FMM5';
+const MAGIC = 'FMM6';
 const LEGACY_BIOME_IDS = ['grassland', 'forest', 'rainforest', 'taiga', 'savanna', 'desert', 'tundra', 'wetland', 'rock', 'snow'];
 const MAX_FILE_BYTES = 1024 * 1024 * 1024;
 export function encodeWorld(world, history) {
   const chunks = []; let offset = 0;
   const append = array => { const ref = { offset, length: array.length }; chunks.push(new Uint8Array(array.buffer, array.byteOffset, array.byteLength)); offset += array.byteLength; return ref; };
-  const metadata = { version: 5, tileSize: TILE, name: world.name, bounds: world.bounds, sea: world.sea, ocean: world.ocean, biomesVisible: world.biomesVisible, biomeIds: BIOMES.map(b => b.id), rivers: world.rivers, riversVisible: world.riversVisible, objects: world.objects, objectsVisible: world.objectsVisible,
+  const metadata = { version: 6, tileSize: TILE, name: world.name, bounds: world.bounds, sea: world.sea, ocean: world.ocean, biomesVisible: world.biomesVisible, biomeIds: BIOMES.map(b => b.id), rivers: world.rivers, riversVisible: world.riversVisible, objects: world.objects, objectsVisible: world.objectsVisible,
     tiles: [...world.tiles].map(([key, data]) => ({ key, data: append(data) })),
+    colors: [...world.colors].filter(([, data]) => data.some(v => v)).map(([key, data]) => ({ key, data: append(data) })),
     biomes: [...world.biomes].filter(([, data]) => data.some(v => v)).map(([key, data]) => ({ key, data: append(data) })),
     history: { cursor: history.cursor, trimmed: history.trimmed, entries: history.entries.map(entry => ({ label: entry.label, time: entry.time, reset: entry.reset, before: entry.before, after: entry.after, objects: entry.objects, patches: entry.patches?.map(p => ({ key: p.key, channel: p.channel ?? 'height', indices: append(p.indices), before: append(p.before), after: append(p.after) })) })) }
   };
@@ -33,13 +34,13 @@ export async function decodeWorld(blob) {
   if (blob.size > MAX_FILE_BYTES || blob.size < 8) throw new Error('World file is too large or incomplete');
   const bytes = new Uint8Array(await blob.arrayBuffer());
   const magic = decoder.decode(bytes.subarray(0, 4));
-  if (!['FMM1', 'FMM2', 'FMM3', 'FMM4', MAGIC].includes(magic)) throw new Error('This is not an FMM world file');
+  if (!['FMM1', 'FMM2', 'FMM3', 'FMM4', 'FMM5', MAGIC].includes(magic)) throw new Error('This is not an FMM world file');
   const length = new DataView(bytes.buffer).getUint32(4, true), start = 8 + length;
   // River history lives in metadata. A full 256 MiB retained-history budget
   // can legitimately encode more than 64 MiB of JSON.
   if (length > 192 * 1024 * 1024 || start > bytes.length) throw new Error('World file header is damaged');
   const meta = JSON.parse(decoder.decode(bytes.subarray(8, start)));
-  if (![1, 2, 3, 4, 5].includes(meta.version) || magic !== `FMM${meta.version}` || meta.tileSize !== TILE || !validateBounds(meta.bounds) || !Array.isArray(meta.tiles) || meta.tiles.length > 16000) throw new Error('Unsupported or invalid world file');
+  if (![1, 2, 3, 4, 5, 6].includes(meta.version) || magic !== `FMM${meta.version}` || meta.tileSize !== TILE || !validateBounds(meta.bounds) || !Array.isArray(meta.tiles) || meta.tiles.length > 16000) throw new Error('Unsupported or invalid world file');
   validateMeta({ sea: meta.sea, ocean: meta.ocean });
   const world = new World(); world.name = String(meta.name || 'Untitled world').slice(0, 70); world.bounds = meta.bounds; world.sea = meta.sea; world.ocean = meta.ocean;
   if (meta.version >= 2) {
@@ -74,6 +75,15 @@ export async function decodeWorld(blob) {
     if (!Array.isArray(meta.biomes) || meta.biomes.length > 16000) throw new Error('Invalid biome tiles');
     for (const tile of meta.biomes) { if (!validKey(tile.key) || world.biomes.has(tile.key)) throw new Error('Invalid biome tile'); const values = readBiomes(tile.data); if (values.length !== TILE * TILE * BIOME_COUNT) throw new Error('Incomplete biome tile'); world.biomes.set(tile.key, values); }
   }
+  if (meta.version >= 6) {
+    if (!Array.isArray(meta.colors) || meta.colors.length > 16000) throw new Error('Invalid custom paint tiles');
+    for (const tile of meta.colors) {
+      if (!validKey(tile.key) || world.colors.has(tile.key)) throw new Error('Invalid custom paint tile');
+      const values = read(tile.data, Uint8Array, TILE * TILE * 4);
+      if (values.length !== TILE * TILE * 4) throw new Error('Incomplete custom paint tile');
+      world.colors.set(tile.key, values);
+    }
+  }
   const history = new History(world), h = meta.history;
   if (!h || !Array.isArray(h.entries) || h.entries.length > 2000 || !Number.isInteger(h.cursor) || h.cursor < 0 || h.cursor > h.entries.length) throw new Error('Invalid undo history');
   for (const entry of h.entries) {
@@ -84,9 +94,10 @@ export async function decodeWorld(blob) {
       next.bytes = next.before ? metadataBytes(next.before, next.after) : 0;
       next.patches = entry.patches.map(p => {
         if (!validKey(p.key)) throw new Error('Invalid history tile');
-        const channel = p.channel ?? 'height'; if (!['height', 'biomes'].includes(channel) || (meta.version === 1 && channel !== 'height')) throw new Error('Invalid history channel');
-        const stride = channel === 'biomes' ? BIOME_COUNT : 1;
-        const indices = read(p.indices, Uint16Array, TILE * TILE), before = stride === 1 ? readHeights(p.before, TILE * TILE) : readBiomes(p.before), after = stride === 1 ? readHeights(p.after, TILE * TILE) : readBiomes(p.after);
+        const channel = p.channel ?? 'height'; if (!['height', 'biomes', 'colors'].includes(channel) || (channel === 'colors' && meta.version < 6) || (meta.version === 1 && channel !== 'height')) throw new Error('Invalid history channel');
+        const stride = channel === 'colors' ? 4 : channel === 'biomes' ? BIOME_COUNT : 1;
+        const readValues = ref => channel === 'colors' ? read(ref, Uint8Array, TILE * TILE * 4) : stride === 1 ? readHeights(ref, TILE * TILE) : readBiomes(ref);
+        const indices = read(p.indices, Uint16Array, TILE * TILE), before = readValues(p.before), after = readValues(p.after);
         if (indices.length * stride !== before.length || indices.length * stride !== after.length || indices.some(i => i >= TILE * TILE)) throw new Error('Invalid history samples');
         next.bytes += indices.byteLength + before.byteLength + after.byteLength; return { key: p.key, channel, indices, before, after };
       });

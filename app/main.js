@@ -20,6 +20,9 @@ let tool = 'raise', biome = 0, radius = 56, strength = .45, rotation = 0, brushM
 let modifiers = { shift: false, alt: false }, lastTime = 0, toastTimer;
 let rotateBrushHeld = false, rotateBrushUsed = false;
 let syncWorkspaceLimits = () => {};
+let customColor = null;
+const colorHex = rgb => '#' + rgb.map(v => Math.round(v).toString(16).padStart(2, '0')).join('');
+const paintName = () => customColor ? 'custom ' + colorHex(customColor) : BIOMES[biome].name.toLowerCase();
 let brushPreviewEnabled = true, previewOpacity = .36, pickingBiome = false;
 try { const saved = localStorage.getItem("fmm-preview-opacity"); if (saved !== null && Number.isFinite(+saved)) previewOpacity = Math.max(0, Math.min(1, +saved)); } catch {}
 try { brushPreviewEnabled = localStorage.getItem('fmm-brush-preview-v1') !== 'false'; } catch { /* Preview remains enabled when browser storage is unavailable. */ }
@@ -45,7 +48,7 @@ function selectTool(next) {
   $('#modifier-hint').textContent = objects ? 'Erase objects temporarily' : painting ? 'Erase paint temporarily' : 'Smooth temporarily';
   document.querySelectorAll('[data-mode]').forEach(b => b.classList.toggle('active', b.dataset.mode === (objects ? 'objects' : painting ? 'paint' : 'sculpt')));
   document.querySelectorAll('[data-tool]').forEach(b => b.classList.toggle('active', b.dataset.tool === tool));
-  $('#stroke-hint').textContent = tool === 'river' ? 'Sketch from source to outlet · release to carve' : tool === 'paint' ? `Paint ${BIOMES[biome].name.toLowerCase()} · Shift to erase` : tool === 'erase' ? 'Remove biome paint to restore natural coloring' : tool === 'pan' ? 'Drag to move the view' : tool === 'stamp' ? 'Click to place a heightmap stamp' : `Click and drag to ${tool} terrain`;
+  $('#stroke-hint').textContent = tool === 'river' ? 'Sketch from source to outlet · release to carve' : tool === 'paint' ? `Paint ${paintName()} · Shift to erase` : tool === 'erase' ? 'Remove biome paint to restore natural coloring' : tool === 'pan' ? 'Drag to move the view' : tool === 'stamp' ? 'Click to place a heightmap stamp' : `Click and drag to ${tool} terrain`;
   if (objects) $('#stroke-hint').textContent = tool === 'erase-object' ? 'Drag to erase objects in the circle' : `${tool === 'scatter' ? 'Drag to scatter' : 'Click to place one'} · ${objectType(objectKind).name.toLowerCase()}`;
   $('#map').style.cursor = tool === 'pan' ? 'grab' : 'crosshair';
   brushSettings();
@@ -81,15 +84,29 @@ function setBiomePicking(enabled) {
   $('#pick-biome').setAttribute('aria-pressed', String(enabled));
   $('#pick-biome').textContent = enabled ? 'Click terrain · Esc cancels' : 'Pick from terrain';
 }
-function chooseBiome(index) {
-  biome = index; selectTool('paint');
+function chooseBiome(index, { syncColor = true } = {}) {
+  customColor = null; biome = index; selectTool('paint');
   document.querySelectorAll('[data-biome]').forEach(button => button.classList.toggle('active', button.dataset.biome === BIOMES[index].id));
-  $('#biome-color-match').value = BIOMES[index].color;
+  if (syncColor) $('#biome-color-match').value = BIOMES[index].color;
+  $('#biome-color-result').textContent = 'Painting biome: ' + BIOMES[index].name;
 }
 $('#pick-biome').onclick = () => { endStroke(); setBiomePicking(!pickingBiome); };
+function chooseCustomColor(rgb) {
+  endStroke(); customColor = rgb.slice(); selectTool('paint');
+  document.querySelectorAll('[data-biome]').forEach(button => button.classList.remove('active'));
+  $('#biome-color-result').textContent = 'Painting custom color ' + colorHex(customColor);
+}
 $('#biome-color-match').onchange = e => {
   const hex = e.target.value;
-  chooseBiome(nearestBiome([1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16))));
+  chooseCustomColor([1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16)));
+};
+$('#use-custom-color').onclick = () => {
+  const hex = $('#biome-color-match').value;
+  chooseCustomColor([1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16)));
+};
+$('#match-biome').onclick = () => {
+  const hex = $('#biome-color-match').value;
+  chooseBiome(nearestBiome([1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16))), { syncColor: false });
 };
 $('#preview-opacity').value = Math.round(previewOpacity * 100);
 $('#preview-opacity-value').textContent = Math.round(previewOpacity * 100) + '%';
@@ -123,7 +140,7 @@ function refresh() {
   if (last < history.entries.length) row(history.entries.length, 'Go to latest state', `${history.entries.length - last} more steps`);
   revealHistoryCursor();
   const b = world.bounds; $('#world-size').textContent = `${(b.maxX - b.minX).toLocaleString()} × ${(b.maxY - b.minY).toLocaleString()}`;
-  $('#world-stats').textContent = `${world.tiles.size} terrain tiles · ${((world.tiles.size * 4 + world.biomes.size * BIOME_COUNT) * TILE * TILE / 1048576).toFixed(1)} MB`;
+  $('#world-stats').textContent = `${world.tiles.size} terrain tiles · ${((world.tiles.size * 4 + world.biomes.size * BIOME_COUNT + world.colors.size * 4) * TILE * TILE / 1048576).toFixed(1)} MB`;
   $('#sea').value = Math.round(world.sea * 1000); $('#sea-value').textContent = `${Math.round(world.sea * 1000)} m`; $('#ocean').checked = world.ocean; $('#world-name').value = world.name;
   $('#biomes-visible').checked = world.biomesVisible;
   $('#objects-visible').checked = world.objectsVisible; $('#object-count').textContent = `${world.objects.length.toLocaleString()} / ${objectLimit(world).toLocaleString()}`;
@@ -157,7 +174,7 @@ function paint(point, dt = 1) {
     return;
   }
   if (riverGuide) { if (world.inside(point.x, point.y) && riverGuide.length < 4096 && Math.hypot(point.x - riverGuide.at(-1).x, point.y - riverGuide.at(-1).y) > .5) riverGuide.push({ ...point }); return; }
-  dab(world, stroke, point.x, point.y, { tool: activeTool(), radius, strength, rotation, mask: tool === 'meld' ? null : mask, target: stroke.target, dt, biome, mode: brushMode, strokeHeight });
+  dab(world, stroke, point.x, point.y, { tool: activeTool(), radius, strength, rotation, mask: tool === 'meld' ? null : mask, target: stroke.target, dt, biome, customColor, mode: brushMode, strokeHeight });
 }
 function startStroke(point) {
   if (!point || !world.inside(point.x, point.y)) return;
@@ -165,7 +182,7 @@ function startStroke(point) {
   if (painting && !world.biomesVisible) { toast('Show the Biomes layer before painting.'); return; }
   if (isObjectTool(tool) && !world.objectsVisible) { toast('Show the Objects layer before editing objects.'); return; }
   if (tool === 'river' && !world.riversVisible) { toast('Show the River water layer before drawing a river.'); return; }
-  const selected = activeTool(), label = selected === 'paint' ? `Paint ${BIOMES[biome].name.toLowerCase()}` : selected === 'scatter' || selected === 'place-object' ? `${selected === 'scatter' ? 'Scatter' : 'Place'} ${objectType(objectKind).name.toLowerCase()}` : labels[selected];
+  const selected = activeTool(), label = selected === 'paint' ? `Paint ${paintName()}` : selected === 'scatter' || selected === 'place-object' ? `${selected === 'scatter' ? 'Scatter' : 'Place'} ${objectType(objectKind).name.toLowerCase()}` : labels[selected];
   stroke = history.begin(`${label}${brushMode === 'blend' && ['raise', 'lower', 'stamp'].includes(selected) ? ' · Blend' : ''}`); stroke.target = world.sample(point.x, point.y);
   if (tool === 'river') riverGuide = [{ ...point }];
   strokePath = new StrokePath(point, isObjectTool(tool) ? Math.max(1, objectRadius * .2) : tool === 'river' ? Math.max(3, riverWidth * .25) : Math.max(2, radius * .16)); lastTime = performance.now(); paint(point);
@@ -195,7 +212,10 @@ function bindCanvas(canvas, pointFor, is3D = false) {
     if (e.button !== 0 && !(e.button === 1 && !is3D)) return;
     if (pickingBiome && e.button === 0) {
       const point = pointFor(e), index = point ? pickBiome(world, point.x, point.y) : null;
-      if (index !== null) { chooseBiome(index); toast('Picked ' + BIOMES[index].name.toLowerCase()); }
+      if (index !== null) {
+        if (Array.isArray(index)) { chooseCustomColor(index); $('#biome-color-match').value = colorHex(index); toast('Picked custom color ' + colorHex(index)); }
+        else { chooseBiome(index); toast('Picked ' + BIOMES[index].name.toLowerCase()); }
+      }
       else toast('Pick a point inside the world.');
       return;
     }

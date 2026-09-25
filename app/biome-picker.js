@@ -37,6 +37,8 @@ export function pickBiome(world, x, y) {
   }
   x = Math.floor(x); y = Math.floor(y);
   const tx = Math.floor(x / TILE), ty = Math.floor(y / TILE), weights = world.biomes.get(keyOf(tx, ty));
+  const colors = world.colors.get(keyOf(tx, ty)), colorOffset = ((y - ty * TILE) * TILE + x - tx * TILE) * 4;
+  if (world.biomesVisible && colors?.[colorOffset + 3]) return Array.from(colors.subarray(colorOffset, colorOffset + 3));
   const offset = ((y - ty * TILE) * TILE + x - tx * TILE) * BIOME_COUNT;
   if (world.biomesVisible && weights) {
     let best = -1, weight = 0;
