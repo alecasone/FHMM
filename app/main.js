@@ -200,7 +200,11 @@ function endStroke() {
     if (committed) changed();
     if (isObjectTool(tool) && activeTool() !== 'erase-object') {
       if (world.objects.length >= objectLimit(world)) toast('Object limit reached (' + objectLimit(world).toLocaleString() + '). Expand the world or erase objects to make room.');
-      else if (!committed) toast('Place objects on land above sea level, with room around existing objects.');
+      else if (!committed) {
+        if (stroke.objectLandCandidates) toast('No room at this scatter spacing. Increase density, reduce brush size, or use Detail to place one object.');
+        else if (stroke.objectRejections?.water) toast('The sampled placement points are below the land threshold. Place objects more than 2 m above sea level.');
+        else toast('No placement points found inside the world. Move the brush farther inside the map.');
+      }
     }
     stroke = null; strokePath = null;
   }

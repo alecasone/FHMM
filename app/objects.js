@@ -212,11 +212,15 @@ function changed(world) { world.objectsRevision++; world.revision++; }
 
 export function placeObject(world, stroke, x, y, { type = 'pine', scale = 1, variation = .25, scatter = false, spacing = 0, random = Math.random } = {}) {
   if (!stroke || !objectType(type) || ![x, y, scale, variation].every(Number.isFinite) || scale < .5 || scale > 2.5 || variation < 0 || variation > .75) return false;
-  if (!world.inside(x, y) || world.sample(x, y) <= world.sea + .002 || world.objects.length >= objectLimit(world)) return false;
+  const rejected = reason => { stroke.objectRejections ??= {}; stroke.objectRejections[reason] = (stroke.objectRejections[reason] || 0) + 1; return false; };
+  if (!world.inside(x, y)) return rejected('bounds');
+  if (world.sample(x, y) <= world.sea + .002) return rejected('water');
+  stroke.objectLandCandidates = (stroke.objectLandCandidates || 0) + 1;
+  if (world.objects.length >= objectLimit(world)) return rejected('capacity');
   const size = scale * (1 + (random() * 2 - 1) * variation), index = spatialIndex(world);
   const footprint = objectType(type).radius * size;
   const clearance = scatter ? Math.max(0, spacing) * .7 : 0;
-  if (nearby(index, x, y, scatter ? Math.max(footprint + MAX_FOOTPRINT, clearance) : 1, o => Math.hypot(o.x - x, o.y - y) < (scatter ? Math.max(clearance, (footprint + objectType(o.type).radius * o.scale) * .85) : .5))) return false;
+  if (nearby(index, x, y, scatter ? Math.max(footprint + MAX_FOOTPRINT, clearance) : 1, o => Math.hypot(o.x - x, o.y - y) < (scatter ? Math.max(clearance, (footprint + objectType(o.type).radius * o.scale) * .85) : .5))) return rejected('spacing');
   const object = { id: crypto.randomUUID(), type, x, y, scale: size, rotation: random() * Math.PI * 2, tint: random() };
   record(stroke, object, null); world.objects.push(object); changed(world);
   indexInsert(index, object); index.revision = world.objectsRevision;
@@ -241,6 +245,9 @@ export function scatterObjects(world, stroke, x, y, { radius = 56, density = .5,
     stroke.scatterCells.add(key);
     if (placeObject(world, stroke, px, py, { type, scale, variation, random, scatter: true, spacing })) count++;
   }
+  // A coarse grid can miss the entire usable area at low density or near map
+  // edges. Try the cursor as a fallback, with the same spacing safeguards.
+  if (!count && !stroke.objectChanges?.size && placeObject(world, stroke, x, y, { type, scale, variation, random, scatter: true, spacing })) count++;
   return count;
 }
 
