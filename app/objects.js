@@ -1,3 +1,4 @@
+import { SEASONS, LIFECYCLES, isLivingType, lifeScale } from './object-variants.js';
 // Objects store horizontal anchors only. Their height is sampled from the terrain.
 export const MAX_OBJECTS = 2 ** 50;
 export function objectLimit(world) { const b = world.bounds; return Math.min(MAX_OBJECTS, (b.maxX - b.minX) * (b.maxY - b.minY)); }
@@ -44,7 +45,7 @@ export const OBJECT_TYPES = [
   },
   {
     "id": "autumn",
-    "name": "Autumn maple",
+    "name": "Maple tree",
     "radius": 5.5,
     "color": "#bf7037",
     "category": "Trees",
@@ -177,6 +178,7 @@ export function validateObjects(objects, limit = MAX_OBJECTS) {
     if (!o || typeof o.id !== 'string' || !/^[\w-]{1,64}$/.test(o.id) || ids.has(o.id) || !objectType(o.type) ||
       ![o.x, o.y, o.scale, o.rotation, o.tint].every(Number.isFinite) || Math.abs(o.x) > 2 ** 24 || Math.abs(o.y) > 2 ** 24 ||
       o.scale < .1 || o.scale > 5 || o.rotation < 0 || o.rotation > Math.PI * 2 || o.tint < 0 || o.tint > 1) throw new Error('Invalid terrain object');
+    if ((o.season !== undefined && !SEASONS.includes(o.season)) || (o.lifecycle !== undefined && !LIFECYCLES.includes(o.lifecycle))) throw new Error('Invalid object variant');
     ids.add(o.id);
   }
 }
@@ -210,25 +212,27 @@ function record(stroke, object, before) {
 }
 function changed(world) { world.objectsRevision++; world.revision++; }
 
-export function placeObject(world, stroke, x, y, { type = 'pine', scale = 1, variation = .25, scatter = false, spacing = 0, random = Math.random } = {}) {
+export function placeObject(world, stroke, x, y, { type = 'pine', scale = 1, variation = .25, scatter = false, spacing = 0, season = 'summer', lifecycle = 'adult', random = Math.random } = {}) {
   if (!stroke || !objectType(type) || ![x, y, scale, variation].every(Number.isFinite) || scale < .5 || scale > 2.5 || variation < 0 || variation > .75) return false;
+  if (!SEASONS.includes(season) || !LIFECYCLES.includes(lifecycle)) return false;
+  if (!isLivingType(type)) lifecycle = 'adult';
   const rejected = reason => { stroke.objectRejections ??= {}; stroke.objectRejections[reason] = (stroke.objectRejections[reason] || 0) + 1; return false; };
   if (!world.inside(x, y)) return rejected('bounds');
   if (world.sample(x, y) <= world.sea + .002) return rejected('water');
   stroke.objectLandCandidates = (stroke.objectLandCandidates || 0) + 1;
   if (world.objects.length >= objectLimit(world)) return rejected('capacity');
   const size = scale * (1 + (random() * 2 - 1) * variation), index = spatialIndex(world);
-  const footprint = objectType(type).radius * size;
+  const footprint = objectType(type).radius * size * lifeScale({ type, lifecycle });
   const clearance = scatter ? Math.max(0, spacing) * .7 : 0;
-  if (nearby(index, x, y, scatter ? Math.max(footprint + MAX_FOOTPRINT, clearance) : 1, o => Math.hypot(o.x - x, o.y - y) < (scatter ? Math.max(clearance, (footprint + objectType(o.type).radius * o.scale) * .85) : .5))) return rejected('spacing');
-  const object = { id: crypto.randomUUID(), type, x, y, scale: size, rotation: random() * Math.PI * 2, tint: random() };
+  if (nearby(index, x, y, scatter ? Math.max(footprint + MAX_FOOTPRINT, clearance) : 1, o => Math.hypot(o.x - x, o.y - y) < (scatter ? Math.max(clearance, (footprint + objectType(o.type).radius * o.scale * lifeScale(o)) * .85) : .5))) return rejected('spacing');
+  const object = { id: crypto.randomUUID(), type, x, y, scale: size, rotation: random() * Math.PI * 2, tint: random(), season, lifecycle };
   record(stroke, object, null); world.objects.push(object); changed(world);
   indexInsert(index, object); index.revision = world.objectsRevision;
   return true;
 }
 
 function hash(x, y, seed) { const value = Math.sin(x * 127.1 + y * 311.7 + seed) * 43758.5453; return value - Math.floor(value); }
-export function scatterObjects(world, stroke, x, y, { radius = 56, density = .5, type = 'pine', scale = 1, variation = .25, random = Math.random } = {}) {
+export function scatterObjects(world, stroke, x, y, { radius = 56, density = .5, type = 'pine', scale = 1, variation = .25, season = 'summer', lifecycle = 'adult', random = Math.random } = {}) {
   if (!stroke || !objectType(type) || ![x, y, radius, density, scale, variation].every(Number.isFinite) || radius <= 0 || radius > 2048 || density <= 0 || density > 1 || scale < .5 || scale > 2.5) return 0;
   stroke.scatterSeed ??= random() * 10000; stroke.scatterCells ??= new Set();
   // Larger brushes spread scenery farther apart: counts grow roughly with radius,
@@ -243,11 +247,11 @@ export function scatterObjects(world, stroke, x, y, { radius = 56, density = .5,
     const key = `${type}:${spacing}:${cx},${cy}`, px = (cx + .15 + hash(cx, cy, stroke.scatterSeed) * .7) * spacing, py = (cy + .15 + hash(cx, cy, stroke.scatterSeed + 31) * .7) * spacing;
     if (stroke.scatterCells.has(key) || Math.hypot(px - x, py - y) > radius) continue;
     stroke.scatterCells.add(key);
-    if (placeObject(world, stroke, px, py, { type, scale, variation, random, scatter: true, spacing })) count++;
+    if (placeObject(world, stroke, px, py, { type, scale, variation, season, lifecycle, random, scatter: true, spacing })) count++;
   }
   // A coarse grid can miss the entire usable area at low density or near map
   // edges. Try the cursor as a fallback, with the same spacing safeguards.
-  if (!count && !stroke.objectChanges?.size && placeObject(world, stroke, x, y, { type, scale, variation, random, scatter: true, spacing })) count++;
+  if (!count && !stroke.objectChanges?.size && placeObject(world, stroke, x, y, { type, scale, variation, season, lifecycle, random, scatter: true, spacing })) count++;
   return count;
 }
 

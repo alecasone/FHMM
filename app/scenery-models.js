@@ -2,7 +2,7 @@ import * as THREE from 'three';
 
 // Shared, low-poly scenery models: one merged geometry per catalog type.
 export function addSceneryParts(type, part) {
-  function stem(a, b, radius, color, top = radius * .65, sides = 5) {
+  function stem(a, b, radius, color, top = radius * .65, sides = 8) {
     const from = new THREE.Vector3(...a), to = new THREE.Vector3(...b), direction = to.clone().sub(from);
     const geometry = new THREE.CylinderGeometry(top, radius, direction.length(), sides);
     geometry.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.normalize()));
@@ -10,7 +10,7 @@ export function addSceneryParts(type, part) {
     part(geometry, color, middle.x, middle.y, middle.z);
   }
   function crown(x, y, z, radius, color, sx = 1, sy = 1, sz = 1) {
-    part(new THREE.IcosahedronGeometry(radius, 0), color, x, y, z, sx, sy, sz);
+    part(new THREE.IcosahedronGeometry(radius, 1), color, x, y, z, sx, sy, sz);
   }
   function leaf(a, b, width, color) {
     const from = new THREE.Vector3(...a), to = new THREE.Vector3(...b), direction = to.clone().sub(from);
@@ -50,7 +50,7 @@ export function addSceneryParts(type, part) {
       stem([x, y + 1.5, z], [x * 1.2, y + 3.5, z * 1.2], .1, '#9b8a70', .025);
     }
   } else if (type === 'grass' || type === 'reeds' || type === 'flowers') {
-    for (let i = 0; i < 9; i++) {
+    for (let i = 0; i < 15; i++) {
       const a = i * 2.4, r = .3 + (i % 3) * .5, x = Math.cos(a) * r, z = Math.sin(a) * r, h = 1.4 + (i % 4) * .55;
       if (type === 'grass') leaf([x, 0, z], [x * 1.4, h, z * 1.4], .2, i % 2 ? '#a3ac62' : '#7d9250');
       else {
@@ -67,7 +67,7 @@ export function addSceneryParts(type, part) {
     }
     if (type === 'yucca') { stem([0, 0, 0], [0, 3.5, 0], .1, '#93815d'); crown(0, 3.5, 0, .65, '#d1c6a0', .65, 1.3, .65); }
   } else if (type === 'boulder') {
-    const stone = new THREE.IcosahedronGeometry(5.2, 1); stone.rotateZ(.3);
+    const stone = new THREE.IcosahedronGeometry(5.2, 2); stone.rotateZ(.3);
     part(stone, '#92999b', 0, 2.6, 0, 1, .85, .9);
     crown(3, .8, -1, 1.8, '#adb0a3', 1, .7, 1);
   } else if (type === 'scree') {
@@ -87,17 +87,27 @@ export function addSceneryParts(type, part) {
       part(new THREE.CylinderGeometry(2.2, 2.2, .35, 5), '#dec09a', (i % 2 - .5) * 5, height * .72, (Math.floor(i / 2) - .5) * 4);
     }
   } else if (type === 'cactus') {
-    stem([0, 0, 0], [0, 9, 0], .65, '#587f59', .55, 8); crown(0, 9, 0, .56, '#719568');
+    stem([0, 0, 0], [0, 9, 0], .65, '#587f59', .55, 12);
+    for (let i = 0; i < 8; i++) {
+      const a = i * Math.PI / 4;
+      stem([Math.cos(a) * .6, .2, Math.sin(a) * .6], [Math.cos(a) * .53, 8.8, Math.sin(a) * .53], .045, '#9ea775', .03, 4);
+    } crown(0, 9, 0, .56, '#719568');
     for (const [x, y] of [[-2, 4], [2, 5.5]]) {
       stem([0, y, 0], [x, y, 0], .4, '#587f59', .4, 6);
       stem([x, y, 0], [x, y + 2.8, 0], .4, '#64895e', .34, 6); crown(x, y + 2.8, 0, .35, '#78996a');
     }
   } else if (type === 'palm') {
+    // Ringed trunk and individual leaflets give the fronds a readable silhouette.
+    for (let i = 0; i < 12; i++) part(new THREE.CylinderGeometry(.7 - i * .023, .74 - i * .023, .15, 9), '#735c43', i / 13, i + .5, 0);
     stem([0, 0, 0], [1, 13, 0], .75, '#9b8059', .4, 7);
     for (let i = 0; i < 9; i++) {
       const a = i * Math.PI * 2 / 9, x = Math.cos(a) * 5.3, z = Math.sin(a) * 5.3;
       leaf([1, 13, 0], [1 + x * .55, 14.2, z * .55], .7, '#81964e');
       leaf([1 + x * .55, 14.2, z * .55], [1 + x, 11.7, z], .6, '#637f42');
+      for (let j = 1; j <= 5; j++) for (const side of [-1, 1]) {
+        const t = j / 6, px = 1 + x * t, pz = z * t, y = 13 + Math.sin(t * Math.PI) * 1.2 - t;
+        leaf([px, y, pz], [px - Math.sin(a) * side * .75, y - .35, pz + Math.cos(a) * side * .75], .12, '#6c8848');
+      }
     }
     crown(.8, 12.5, .5, .6, '#86613b');
   } else throw new Error('Unknown scenery model: ' + type);

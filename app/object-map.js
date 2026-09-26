@@ -1,10 +1,12 @@
+import { objectLife, objectSeason, lifeScale, isLivingType, mapVariantColor } from './object-variants.js';
 import { objectType } from './objects.js';
 
 // Top-down canopy symbols share the 3D models' position, footprint and rotation.
 export function drawMapObjects(ctx, world, px, py, zoom, bounds) {
   if (!world.objectsVisible) return;
   for (const o of world.objects) {
-    const type = objectType(o.type), footprint = type.radius * o.scale, rocky = type.category === 'Rocks' || o.type === 'sandstone';
+    const base = objectType(o.type), bare = isLivingType(o.type) && (objectLife(o) === 'dead' || (objectSeason(o) === 'winter' && ['oak', 'autumn', 'birch', 'willow', 'shrub'].includes(o.type)));
+    const type = { ...base, color: mapVariantColor(o, base.color), symbol: bare ? 'dead' : base.symbol }, footprint = type.radius * o.scale * lifeScale(o), rocky = type.category === 'Rocks' || o.type === 'sandstone';
     if (o.x + footprint < bounds.minX || o.x - footprint > bounds.maxX || o.y + footprint < bounds.minY || o.y - footprint > bounds.maxY || !world.inside(o.x, o.y) || world.sample(o.x, o.y) <= world.sea + .002) continue;
     const x = px(o.x), y = py(o.y), size = Math.max(.85, footprint * zoom);
     ctx.save(); ctx.translate(x, y); ctx.rotate(o.rotation);

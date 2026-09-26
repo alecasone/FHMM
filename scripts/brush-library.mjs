@@ -20,7 +20,7 @@ export function prepareHeightmap(source, { id = brushId('heightmap.png'), name =
   const width = source.readUInt32BE(16), height = source.readUInt32BE(20);
   if (!width || !height || !Number.isSafeInteger(width * height * 2)) throw new Error('Invalid PNG dimensions');
   const image = PNG.sync.read(source, { skipRescale: true });
-  const maxSample = image.depth === 16 ? 65535 : 255;
+  const maxSample = image.colorType === 3 ? 255 : 2 ** image.depth - 1;
   const mask = Buffer.alloc(width * height * 2);
   const sample = (x, y) => {
     const offset = (y * image.width + x) * 4;
@@ -39,7 +39,7 @@ export function prepareHeightmap(source, { id = brushId('heightmap.png'), name =
     thumbnail.data[offset + 2] = 42 + value * 192;
     thumbnail.data[offset + 3] = 255;
   }
-  return { entry: { id, name, category, size: width, width, height }, mask, thumbnail: PNG.sync.write(thumbnail) };
+  return { entry: { id, name, category, size: width, width, height, bitDepth: image.depth, native: true }, mask, thumbnail: PNG.sync.write(thumbnail) };
 }
 
 export function createBrushLibrary({ sourceDirectory, builtInDirectory, generatedDirectory }) {
@@ -49,7 +49,8 @@ export function createBrushLibrary({ sourceDirectory, builtInDirectory, generate
 
   async function scan() {
     const builtIns = JSON.parse(await readFile(path.join(builtInDirectory, 'manifest.json'), 'utf8'));
-    const reservedIds = new Set([...builtIns.map(brush => brush.id), 'round']);
+    // Source PNGs replace matching legacy built-ins under the same ID.
+    const reservedIds = new Set(['round']);
     let files = [];
     try { files = await readdir(sourceDirectory); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     files = files.filter(file => path.extname(file).toLowerCase() === '.png').sort((a, b) => a.localeCompare(b));
@@ -80,7 +81,7 @@ export function createBrushLibrary({ sourceDirectory, builtInDirectory, generate
       }
     }
     dynamicIds = new Set(found.map(brush => brush.id));
-    return [...builtIns, ...found];
+    return [...builtIns.filter(brush => !reservedIds.has(brush.id)).map(brush => ({ ...brush, native: brush.native === true })), ...found];
   }
 
   return {

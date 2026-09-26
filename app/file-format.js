@@ -1,15 +1,16 @@
+import { MIN_HEIGHT, MAX_HEIGHT } from './height-limits.js';
 import { World, History, TILE, metadataBytes } from './world.js';
 import { validateRivers } from './rivers.js';
 import { validateObjects, objectBytes, objectLimit } from './objects.js';
 import { BIOMES, BIOME_COUNT } from './biomes.js';
 const encoder = new TextEncoder(), decoder = new TextDecoder();
-const MAGIC = 'FMM6';
+const MAGIC = 'FMM7';
 const LEGACY_BIOME_IDS = ['grassland', 'forest', 'rainforest', 'taiga', 'savanna', 'desert', 'tundra', 'wetland', 'rock', 'snow'];
 const MAX_FILE_BYTES = 1024 * 1024 * 1024;
 export function encodeWorld(world, history) {
   const chunks = []; let offset = 0;
   const append = array => { const ref = { offset, length: array.length }; chunks.push(new Uint8Array(array.buffer, array.byteOffset, array.byteLength)); offset += array.byteLength; return ref; };
-  const metadata = { version: 6, tileSize: TILE, name: world.name, bounds: world.bounds, sea: world.sea, ocean: world.ocean, biomesVisible: world.biomesVisible, biomeIds: BIOMES.map(b => b.id), rivers: world.rivers, riversVisible: world.riversVisible, objects: world.objects, objectsVisible: world.objectsVisible,
+  const metadata = { version: 7, tileSize: TILE, name: world.name, bounds: world.bounds, sea: world.sea, ocean: world.ocean, biomesVisible: world.biomesVisible, biomeIds: BIOMES.map(b => b.id), rivers: world.rivers, riversVisible: world.riversVisible, objects: world.objects, objectsVisible: world.objectsVisible,
     tiles: [...world.tiles].map(([key, data]) => ({ key, data: append(data) })),
     colors: [...world.colors].filter(([, data]) => data.some(v => v)).map(([key, data]) => ({ key, data: append(data) })),
     biomes: [...world.biomes].filter(([, data]) => data.some(v => v)).map(([key, data]) => ({ key, data: append(data) })),
@@ -34,13 +35,13 @@ export async function decodeWorld(blob) {
   if (blob.size > MAX_FILE_BYTES || blob.size < 8) throw new Error('World file is too large or incomplete');
   const bytes = new Uint8Array(await blob.arrayBuffer());
   const magic = decoder.decode(bytes.subarray(0, 4));
-  if (!['FMM1', 'FMM2', 'FMM3', 'FMM4', 'FMM5', MAGIC].includes(magic)) throw new Error('This is not an FMM world file');
+  if (!['FMM1', 'FMM2', 'FMM3', 'FMM4', 'FMM5', 'FMM6', MAGIC].includes(magic)) throw new Error('This is not an FMM world file');
   const length = new DataView(bytes.buffer).getUint32(4, true), start = 8 + length;
   // River history lives in metadata. A full 256 MiB retained-history budget
   // can legitimately encode more than 64 MiB of JSON.
   if (length > 192 * 1024 * 1024 || start > bytes.length) throw new Error('World file header is damaged');
   const meta = JSON.parse(decoder.decode(bytes.subarray(8, start)));
-  if (![1, 2, 3, 4, 5, 6].includes(meta.version) || magic !== `FMM${meta.version}` || meta.tileSize !== TILE || !validateBounds(meta.bounds) || !Array.isArray(meta.tiles) || meta.tiles.length > 16000) throw new Error('Unsupported or invalid world file');
+  if (![1, 2, 3, 4, 5, 6, 7].includes(meta.version) || magic !== `FMM${meta.version}` || meta.tileSize !== TILE || !validateBounds(meta.bounds) || !Array.isArray(meta.tiles) || meta.tiles.length > 16000) throw new Error('Unsupported or invalid world file');
   validateMeta({ sea: meta.sea, ocean: meta.ocean });
   const world = new World(); world.name = String(meta.name || 'Untitled world').slice(0, 70); world.bounds = meta.bounds; world.sea = meta.sea; world.ocean = meta.ocean;
   if (meta.version >= 2) {
@@ -56,7 +57,7 @@ export async function decodeWorld(blob) {
     allocated += ref.length * Type.BYTES_PER_ELEMENT; if (allocated > MAX_FILE_BYTES) throw new Error('World exceeds the supported import memory budget');
     return new Type(bytes.slice(start + ref.offset, start + ref.offset + ref.length * Type.BYTES_PER_ELEMENT).buffer);
   };
-  const readHeights = (ref, maxLength) => { const data = read(ref, Float32Array, maxLength); if (data.some(n => !Number.isFinite(n) || n < -1 || n > 2)) throw new Error('Invalid terrain heights'); return data; };
+  const readHeights = (ref, maxLength) => { const data = read(ref, Float32Array, maxLength); if (data.some(n => !Number.isFinite(n) || n < MIN_HEIGHT || n > MAX_HEIGHT)) throw new Error('Invalid terrain heights'); return data; };
   const readBiomes = ref => {
     const stride = meta.version >= 5 ? BIOME_COUNT : LEGACY_BIOME_IDS.length;
     const data = read(ref, Uint8Array, TILE * TILE * stride);

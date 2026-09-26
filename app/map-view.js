@@ -4,11 +4,12 @@ import { radians, rotate2D, sunDirection, hillshade, wrapDegrees } from './view-
 import { riverSections } from './rivers.js';
 import { drawMapObjects } from './object-map.js';
 import { brushPreviewStamp } from './brush-preview.js';
+import { drawCursorReference } from './cursor-reference-map.js';
 export class MapView {
   constructor(canvas, world) {
     this.canvas = canvas; this.ctx = canvas.getContext('2d', { alpha: false }); this.world = world;
-    this.rotation = 0; this.sunAzimuth = 315; this.sunElevation = 32; this.riverPreview = []; this.riverCache = []; this.riverRevision = -1; this.lastFlowFrame = 0;
-    this.center = { x: 0, y: 0 }; this.zoom = 1; this.cache = new Map(); this.pending = new Set(); this.contours = true; this.cursor = null; this.needsDraw = true;
+    this.rotation = 0; this.sunAzimuth = 315; this.sunElevation = 32; this.roadPreview = []; this.riverCache = []; this.riverRevision = -1; this.lastFlowFrame = 0;
+    this.center = { x: 0, y: 0 }; this.zoom = 1; this.cache = new Map(); this.pending = new Set(); this.contours = true; this.scaleGrid = true; this.gridSpacing = 128; this.referenceEnabled = true; this.referenceKind = 'house'; this.cursor = null; this.needsDraw = true;
     this.fitPending = true; this.observer = new ResizeObserver(() => { this.resize(); }); this.observer.observe(canvas.parentElement); this.resize();
   }
   resize() {
@@ -54,6 +55,7 @@ export class MapView {
     const halfW = (w * Math.abs(Math.cos(this.rotation)) + h * Math.abs(Math.sin(this.rotation))) / 2, halfH = (h * Math.abs(Math.cos(this.rotation)) + w * Math.abs(Math.sin(this.rotation))) / 2;
     const px = x => (x - this.center.x) * z + w / 2, py = y => (y - this.center.y) * z + h / 2;
     c.fillStyle = this.world.ocean ? `rgb(${terrainColor(-.18, this.world.sea, true).join(',')})` : '#36463b'; c.fillRect(px(b.minX), py(b.minY), (b.maxX - b.minX) * z, (b.maxY - b.minY) * z);
+    c.imageSmoothingEnabled = z < 1;
     c.save(); c.beginPath(); c.rect(px(b.minX), py(b.minY), (b.maxX - b.minX) * z, (b.maxY - b.minY) * z); c.clip();
     let rendered = 0; const visible = new Set();
     for (const key of new Set([...this.world.tiles.keys(), ...this.world.biomes.keys(), ...this.world.colors.keys()])) {
@@ -65,19 +67,24 @@ export class MapView {
       if (tile) c.drawImage(tile, x, y, size + .3, size + .3);
     }
     if (this.cache.size > 240) for (const key of this.cache.keys()) if (!visible.has(key)) { this.cache.delete(key); this.pending.delete(key); }
-    const spacing = TILE * Math.max(1, 2 ** Math.ceil(Math.log2(60 / (TILE * z))));
+    const spacing = this.gridSpacing * Math.max(1, 2 ** Math.ceil(Math.log2(60 / (this.gridSpacing * z))));
     this.drawRivers(c, px, py, z, time);
     const minX = Math.max(b.minX, this.center.x - halfW / z), maxX = Math.min(b.maxX, this.center.x + halfW / z);
     const minY = Math.max(b.minY, this.center.y - halfH / z), maxY = Math.min(b.maxY, this.center.y + halfH / z);
     drawMapObjects(c, this.world, px, py, z, { minX, minY, maxX, maxY });
-    c.strokeStyle = '#b9d9d010'; c.lineWidth = 1; c.beginPath();
+    if (this.scaleGrid) {
+    c.strokeStyle = '#b9d9d038'; c.lineWidth = 1; c.beginPath();
     for (let x = Math.ceil(minX / spacing) * spacing; x <= maxX; x += spacing) { c.moveTo(px(x), py(minY)); c.lineTo(px(x), py(maxY)); }
-    for (let y = Math.ceil(minY / spacing) * spacing; y <= maxY; y += spacing) { c.moveTo(px(minX), py(y)); c.lineTo(px(maxX), py(y)); } c.stroke(); c.restore();
+    for (let y = Math.ceil(minY / spacing) * spacing; y <= maxY; y += spacing) { c.moveTo(px(minX), py(y)); c.lineTo(px(maxX), py(y)); } c.stroke();
+    }
+    c.restore();
     c.strokeStyle = '#70919388'; c.lineWidth = 1; c.setLineDash([5, 5]); c.strokeRect(px(b.minX), py(b.minY), (b.maxX - b.minX) * z, (b.maxY - b.minY) * z); c.setLineDash([]);
     if (this.cursor) {
       const { x, y, radius } = this.cursor; if (this.brushPreview && this.previewStamp) { c.save(); c.globalAlpha = this.brushPreview.opacity ?? .36; c.translate(px(x), py(y)); c.rotate(this.brushPreview.rotation || 0); c.drawImage(this.previewStamp, -radius * z, -radius * z, radius * z * 2, radius * z * 2); c.restore(); } c.beginPath(); c.arc(px(x), py(y), radius * z, 0, Math.PI * 2); c.fillStyle = '#dcebad12'; c.fill(); c.strokeStyle = this.brushPreview?.mask ? '#e2edbb88' : '#e2edbb'; c.lineWidth = 1.3; c.stroke(); c.beginPath(); c.moveTo(px(x) - 4, py(y)); c.lineTo(px(x) + 4, py(y)); c.moveTo(px(x), py(y) - 4); c.lineTo(px(x), py(y) + 4); c.stroke();
     }
+    if (this.cursor && this.referenceEnabled && this.world.inside(this.cursor.x, this.cursor.y)) drawCursorReference(c, px(this.cursor.x), py(this.cursor.y), z, this.rotation, this.referenceKind);
     c.restore();
+    document.querySelector('#map-grid-scale').textContent = this.scaleGrid ? ' · grid ' + spacing.toLocaleString() : '';
     document.querySelector('#map-zoom').textContent = `${Math.round(z * 100)}%`;
     document.querySelector('#map-scale').textContent = `${Math.round(70 / z).toLocaleString()} samples`;
   }
@@ -93,6 +100,6 @@ export class MapView {
       }
     }
     c.setLineDash([]); c.lineDashOffset = 0;
-    if (this.riverPreview.length > 1) { c.strokeStyle = '#90dfed'; c.lineWidth = 2; c.setLineDash([5, 4]); c.beginPath(); this.riverPreview.forEach((p, i) => i ? c.lineTo(px(p.x), py(p.y)) : c.moveTo(px(p.x), py(p.y))); c.stroke(); c.setLineDash([]); }
+    if (this.roadPreview.length > 1) { c.strokeStyle = '#e2c897aa'; c.lineWidth = Math.max(2, (this.roadPreviewWidth || 12) * z); c.setLineDash([5, 4]); c.beginPath(); this.roadPreview.forEach((p, i) => i ? c.lineTo(px(p.x), py(p.y)) : c.moveTo(px(p.x), py(p.y))); c.stroke(); c.setLineDash([]); }
   }
 }

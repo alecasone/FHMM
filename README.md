@@ -21,7 +21,7 @@ All **44 supplied 2048², 16-bit heightmaps** are included as optimized 256², 1
 
 **Undo / Ctrl+Z**, **Redo / Ctrl+Y / Ctrl+Shift+Z**, or click a history row to return to that state. The history keeps up to **2,000 edits or 256 MiB**, retiring oldest steps when either budget is reached. One unusually large edit is retained even when it exceeds the budget. Starting a new stroke after undo replaces the redo branch. Ocean and expansion changes are included. The list shows a moving window of history with jumps to the oldest and latest states.
 
-**New ocean world** starts with no allocated terrain. Opening another world first downloads the current world as a backup after confirmation. Resetting a world is undoable. **Export heightmap** writes a 16-bit, big-endian PGM image, with heights from -1 to 2 mapped to 0–65535; its header includes origin and sea level. Whole-world export is limited to 16 million samples. `.fmm` retains full float precision and tiled coordinates.
+**New ocean world** starts with no allocated terrain. Opening another world first downloads the current world as a backup after confirmation. Resetting a world is undoable. **Export heightmap** writes a 16-bit, big-endian PGM image, with heights from -1 to 5 (−1,000 to +5,000 meters) mapped to 0–65535; its header includes origin and sea level. Whole-world export is limited to 16 million samples. `.fmm` retains full float precision and tiled coordinates.
 
 ## Running manually
 

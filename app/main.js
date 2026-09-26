@@ -6,7 +6,9 @@ import { renderViews } from './render-loop.js';
 import { StrokePath, accumulatesWhileHeld } from './brush-stroke.js';
 import { MapView } from './map-view.js';
 import { SceneView } from './scene-view.js';
-import { addRiver, carveRiver } from './rivers.js';
+import { ROAD_TYPES, paintRoad } from './roads.js';
+import { CREATIVE_PRESETS, parsePaintColor } from './creative-paint.js';
+import { isLivingType, lifeScale } from './object-variants.js';
 import { initWorkspaceUI } from './workspace-ui.js';
 import { OBJECT_TYPES, objectLimit, objectType, isObjectTool, scatterObjects, placeObject, eraseObjects } from './objects.js';
 
@@ -20,25 +22,30 @@ let tool = 'raise', biome = 0, radius = 56, strength = .45, rotation = 0, brushM
 let modifiers = { shift: false, alt: false }, lastTime = 0, toastTimer;
 let rotateBrushHeld = false, rotateBrushUsed = false;
 let syncWorkspaceLimits = () => {};
-let customColor = null;
+let customColor = null, creative = null;
 const colorHex = rgb => '#' + rgb.map(v => Math.round(v).toString(16).padStart(2, '0')).join('');
-const paintName = () => customColor ? 'custom ' + colorHex(customColor) : BIOMES[biome].name.toLowerCase();
+const paintName = () => creative ? CREATIVE_PRESETS[creative.kind].name.toLowerCase() : customColor ? 'custom ' + colorHex(customColor) : BIOMES[biome].name.toLowerCase();
 let brushPreviewEnabled = true, previewOpacity = .36, pickingBiome = false;
 try { const saved = localStorage.getItem("fmm-preview-opacity"); if (saved !== null && Number.isFinite(+saved)) previewOpacity = Math.max(0, Math.min(1, +saved)); } catch {}
 try { brushPreviewEnabled = localStorage.getItem('fmm-brush-preview-v1') !== 'false'; } catch { /* Preview remains enabled when browser storage is unavailable. */ }
-let riverGuide = null, riverWidth = 18, riverDepth = .03, riverNatural = true;
+let roadGuide = null, roadWidth = 12, roadType = 'dirt', roadPath = 'freehand', roadGrade = false;
+let objectSeason = 'summer', objectLifecycle = 'adult';
 let objectKind = 'pine', objectRadius = 56, objectDensity = .5, objectScale = 1, objectVariation = .25, objectEraseFilter = 'all';
-const labels = { raise: 'Raise terrain', lower: 'Lower terrain', flatten: 'Flatten terrain', smooth: 'Smooth terrain', meld: 'Meld terrain', stamp: 'Stamp terrain', pan: 'Pan view', paint: 'Paint biome', erase: 'Restore natural color', river: 'Carve river', scatter: 'Scatter objects', 'place-object': 'Place object', 'erase-object': 'Erase objects' };
+const labels = { raise: 'Raise terrain', lower: 'Lower terrain', flatten: 'Flatten terrain', smooth: 'Smooth terrain', meld: 'Meld terrain', stamp: 'Stamp terrain', pan: 'Pan view', paint: 'Paint biome', erase: 'Restore natural color', road: 'Paint road', scatter: 'Scatter objects', 'place-object': 'Place object', 'erase-object': 'Erase objects' };
 function toast(message) { $('#toast').textContent = message; $('#toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').hidden = true, 3500); }
 function brushSettings() {
   const sculpt = ['raise', 'lower', 'stamp'].includes(tool), blend = brushMode === 'blend';
   const objects = isObjectTool(tool);
-  $('#river-settings').hidden = tool !== 'river'; $('#standard-settings').hidden = tool === 'river' || objects;
-  $('#object-settings').hidden = !objects; $('#object-radius-control').hidden = tool === 'place-object';
+  $('#road-settings').hidden = tool !== 'road'; $('#standard-settings').hidden = tool === 'road' || objects;
+  $('#object-settings').hidden = !objects;
+  const living = isLivingType(objectKind) && objectKind !== 'dead-tree';
+  $('#object-lifecycle').disabled = !living;
+  $('#object-variant-note').textContent = living ? 'Variants apply to new placements. Existing objects keep their own season and age.' : objectKind === 'dead-tree' ? 'This species is always dead. Season applies to new placements.' : 'Rock formations have seasonal surfaces; lifecycle applies to living scenery.'; $('#object-radius-control').hidden = tool === 'place-object';
   $('#object-placement-settings').hidden = tool === 'erase-object'; $('#object-density-control').hidden = tool !== 'scatter'; $('#object-erase-control').hidden = !objects;
   $('#object-brush-note').textContent = tool === 'place-object' ? 'One object per click, centered on the cursor. Hold Shift to use the area eraser.' : tool === 'erase-object' ? 'Drag to erase object anchors inside the circle. Terrain and biome paint stay intact.' : 'Drag to splatter objects on land. Overlap stays spaced. Hold Shift to erase.';
-  $('.brush-section').hidden = tool === 'river' || tool === 'meld' || objects; $('.brush-current').hidden = tool === 'river' || tool === 'meld' || objects;
-  $('#panel-brush-advanced').hidden = tool === 'meld'; $('#meld-note').hidden = tool !== 'meld'; $('.canvas-bottom').classList.toggle('river-mode', tool === 'river'); $('.canvas-bottom').classList.toggle('objects-mode', objects);
+  $('.brush-section').hidden = tool === 'road' || tool === 'meld' || objects; $('.brush-current').hidden = tool === 'road' || tool === 'meld' || objects;
+  updateBrushResolution();
+  $('#panel-brush-advanced').hidden = tool === 'meld'; $('#meld-note').hidden = tool !== 'meld'; $('.canvas-bottom').classList.toggle('road-mode', tool === 'road'); $('.canvas-bottom').classList.toggle('objects-mode', objects);
   $('#buildup-settings').hidden = !sculpt; $('#stroke-height-control').hidden = !blend;
   $('#buildup-note').textContent = blend ? `Up to ${+(strokeHeight * strength * 1000).toFixed(2)} m per stroke at this strength. Overlap stays even; release to build another layer.` : tool === 'stamp' ? 'Each click places one heightmap from the sampled height. Blend applies a gentler layer.' : 'Height keeps building as you drag or hold. Use Blend for controlled layers.';
 }
@@ -48,7 +55,7 @@ function selectTool(next) {
   $('#modifier-hint').textContent = objects ? 'Erase objects temporarily' : painting ? 'Erase paint temporarily' : 'Smooth temporarily';
   document.querySelectorAll('[data-mode]').forEach(b => b.classList.toggle('active', b.dataset.mode === (objects ? 'objects' : painting ? 'paint' : 'sculpt')));
   document.querySelectorAll('[data-tool]').forEach(b => b.classList.toggle('active', b.dataset.tool === tool));
-  $('#stroke-hint').textContent = tool === 'river' ? 'Sketch from source to outlet · release to carve' : tool === 'paint' ? `Paint ${paintName()} · Shift to erase` : tool === 'erase' ? 'Remove biome paint to restore natural coloring' : tool === 'pan' ? 'Drag to move the view' : tool === 'stamp' ? 'Click to place a heightmap stamp' : `Click and drag to ${tool} terrain`;
+  $('#stroke-hint').textContent = tool === 'road' ? 'Draw a road route · release to paint' : tool === 'paint' ? `Paint ${paintName()} · Shift to erase` : tool === 'erase' ? 'Remove biome paint to restore natural coloring' : tool === 'pan' ? 'Drag to move the view' : tool === 'stamp' ? 'Click to place a heightmap stamp' : `Click and drag to ${tool} terrain`;
   if (objects) $('#stroke-hint').textContent = tool === 'erase-object' ? 'Drag to erase objects in the circle' : `${tool === 'scatter' ? 'Drag to scatter' : 'Click to place one'} · ${objectType(objectKind).name.toLowerCase()}`;
   $('#map').style.cursor = tool === 'pan' ? 'grab' : 'crosshair';
   brushSettings();
@@ -85,6 +92,7 @@ function setBiomePicking(enabled) {
   $('#pick-biome').textContent = enabled ? 'Click terrain · Esc cancels' : 'Pick from terrain';
 }
 function chooseBiome(index, { syncColor = true } = {}) {
+  endStroke(); creative = null; $('#paint-style').value = 'plain'; $('#creative-settings').hidden = true;
   customColor = null; biome = index; selectTool('paint');
   document.querySelectorAll('[data-biome]').forEach(button => button.classList.toggle('active', button.dataset.biome === BIOMES[index].id));
   if (syncColor) $('#biome-color-match').value = BIOMES[index].color;
@@ -92,7 +100,7 @@ function chooseBiome(index, { syncColor = true } = {}) {
 }
 $('#pick-biome').onclick = () => { endStroke(); setBiomePicking(!pickingBiome); };
 function chooseCustomColor(rgb) {
-  endStroke(); customColor = rgb.slice(); selectTool('paint');
+  endStroke(); creative = null; $('#paint-style').value = 'plain'; $('#creative-settings').hidden = true; customColor = rgb.slice(); selectTool('paint');
   document.querySelectorAll('[data-biome]').forEach(button => button.classList.remove('active'));
   $('#biome-color-result').textContent = 'Painting custom color ' + colorHex(customColor);
 }
@@ -115,17 +123,45 @@ $('#preview-opacity').oninput = e => {
   try { localStorage.setItem('fmm-preview-opacity', String(previewOpacity)); } catch {}
   cursor(currentPoint);
 };
-$('#radius').oninput = e => { endStroke(); radius = +e.target.value; $('#radius-value').textContent = radius * 2; cursor(currentPoint); };
+$('#radius').oninput = e => { endStroke(); radius = +e.target.value; $('#radius-value').textContent = radius * 2; updateBrushResolution(); cursor(currentPoint); };
 $('#strength').oninput = e => { endStroke(); strength = +e.target.value / 100; $('#strength-value').textContent = `${e.target.value}%`; brushSettings(); };
 $('#rotation').oninput = e => { endStroke(); rotation = +e.target.value / 180 * Math.PI; cursor(currentPoint); $('#rotation-value').textContent = `${e.target.value}°`; };
 $('#brush-preview').checked = brushPreviewEnabled; $('#brush-preview').onchange = e => { brushPreviewEnabled = e.target.checked; try { localStorage.setItem('fmm-brush-preview-v1', String(brushPreviewEnabled)); } catch { /* Preference remains active for this session. */ } cursor(currentPoint); };
 $('#brush-mode').onchange = e => { endStroke(); brushMode = e.target.value; brushSettings(); };
 $('#stroke-height').oninput = e => { endStroke(); strokeHeight = +e.target.value / 1000; $('#stroke-height-value').textContent = `${e.target.value} m`; brushSettings(); };
 brushSettings();
-$('#river-width').oninput = e => { endStroke(); riverWidth = +e.target.value; $('#river-width-value').textContent = `${riverWidth} samples`; };
-$('#river-depth').oninput = e => { endStroke(); riverDepth = +e.target.value / 1000; $('#river-depth-value').textContent = `${e.target.value} m`; };
-$('#river-natural').onchange = e => { endStroke(); riverNatural = e.target.checked; };
-$('#recarve-rivers').onclick = () => { endStroke(); if (!world.rivers.length) return; const edit = history.begin('Recarve river channels'); for (const river of world.rivers) carveRiver(world, edit, river); if (history.commit(edit)) changed(); toast('River channels recarved. Undo restores your previous terrain.'); };
+$('#road-width').oninput = e => { endStroke(); roadWidth = +e.target.value; $('#road-width-value').textContent = roadWidth + ' samples'; cursor(currentPoint); };
+$('#road-type').onchange = e => { endStroke(); roadType = e.target.value; };
+$('#road-path').onchange = e => { endStroke(); roadPath = e.target.value; };
+$('#road-grade').onchange = e => { endStroke(); roadGrade = e.target.checked; };
+$('#object-season').onchange = e => { endStroke(); objectSeason = e.target.value; };
+$('#object-lifecycle').onchange = e => { endStroke(); objectLifecycle = e.target.value; cursor(currentPoint); };
+function updateCreativeSettings() {
+  const kind = $('#paint-style').value;
+  $('#creative-settings').hidden = kind === 'plain';
+  if (kind === 'plain') {
+    creative = null;
+    document.querySelectorAll('[data-biome]').forEach(button => button.classList.toggle('active', !customColor && button.dataset.biome === BIOMES[biome].id));
+    $('#biome-color-result').textContent = customColor ? 'Painting custom color ' + colorHex(customColor) : 'Painting biome: ' + BIOMES[biome].name;
+    return;
+  }
+  creative = { kind, colors: [0, 1, 2, 3].map(i => parsePaintColor($('#creative-color-' + i).value)), thickness: +$('#creative-size').value, tilt: +$('#strata-tilt').value, angle: +$('#strata-angle').value };
+  $('#strata-angle-settings').hidden = kind !== 'strata';
+  $('#creative-size-label').textContent = kind === 'strata' ? 'Layer thickness' : 'Patch scale';
+  $('#creative-size-value').textContent = creative.thickness + (kind === 'strata' ? ' m' : ' samples');
+  $('#strata-tilt-value').textContent = creative.tilt + '°'; $('#strata-angle-value').textContent = creative.angle + '°';
+  $('#creative-note').textContent = kind === 'strata' ? 'Layers use the terrain height when painted. Tilt inclines the bands; direction rotates their slope.' : 'World-aligned mottling follows the terrain slope. Paint to apply; repaint after sculpting to recalculate.';
+  document.querySelectorAll('[data-biome]').forEach(button => button.classList.remove('active'));
+  $('#biome-color-result').textContent = 'Painting ' + CREATIVE_PRESETS[kind].name;
+}
+$('#paint-style').onchange = () => {
+  endStroke(); const preset = CREATIVE_PRESETS[$('#paint-style').value];
+  if (preset) preset.colors.forEach((hex, i) => { $('#creative-color-' + i).value = hex; });
+  updateCreativeSettings(); selectTool('paint');
+};
+for (const id of ['creative-size', 'strata-tilt', 'strata-angle', 'creative-color-0', 'creative-color-1', 'creative-color-2', 'creative-color-3']) {
+  $('#' + id).oninput = () => { endStroke(); updateCreativeSettings(); selectTool('paint'); };
+}
 function refresh() {
   syncWorkspaceLimits();
   $('#undo').disabled = !history.cursor; $('#redo').disabled = history.cursor === history.entries.length;
@@ -144,7 +180,7 @@ function refresh() {
   $('#sea').value = Math.round(world.sea * 1000); $('#sea-value').textContent = `${Math.round(world.sea * 1000)} m`; $('#ocean').checked = world.ocean; $('#world-name').value = world.name;
   $('#biomes-visible').checked = world.biomesVisible;
   $('#objects-visible').checked = world.objectsVisible; $('#object-count').textContent = `${world.objects.length.toLocaleString()} / ${objectLimit(world).toLocaleString()}`;
-  $('#rivers-visible').checked = world.riversVisible; $('#river-count').textContent = `${world.rivers.length} ${world.rivers.length === 1 ? 'river' : 'rivers'}`; $('#recarve-rivers').disabled = !world.rivers.length;
+  $('#rivers-visible').checked = world.riversVisible;
 }
 function revealHistoryCursor() {
   const list = $('#history-list'), selectedRow = list.querySelector('.current');
@@ -155,10 +191,10 @@ function changed() { $('#save-status').textContent = 'Unsaved changes'; refresh(
 function afterHistory() { map.invalidate(); scene?.invalidate(); if (history.entries[history.cursor]?.reset || history.entries[history.cursor - 1]?.reset) resetViews(false); changed(); }
 $('#undo').onclick = () => { endStroke(); if (history.undo()) afterHistory(); };
 $('#redo').onclick = () => { endStroke(); if (history.redo()) afterHistory(); };
-function cursor(point) { const size = isObjectTool(tool) ? (activeTool() === 'place-object' ? objectType(objectKind).radius * objectScale : objectRadius) : tool === 'river' ? riverWidth / 2 : radius; const preview = brushPreviewEnabled && !pickingBiome && !isObjectTool(tool) && tool !== 'river' && tool !== 'pan' ? { mask: tool === 'meld' ? null : mask, rotation, opacity: previewOpacity } : null; currentPoint = point; map.cursor = point && { ...point, radius: size }; map.setBrushPreview(point ? preview : null); map.needsDraw = true; scene?.cursor(point, size, point ? preview : null); if (point) $('#coordinates').textContent = `X ${Math.round(point.x)} · Y ${Math.round(point.y)} · ${Math.round(world.sample(point.x, point.y) * 1000)} m`; }
+function cursor(point) { const size = isObjectTool(tool) ? (activeTool() === 'place-object' ? objectType(objectKind).radius * objectScale * lifeScale({ type: objectKind, lifecycle: objectLifecycle }) : objectRadius) : tool === 'road' ? roadWidth / 2 : radius; const preview = brushPreviewEnabled && !pickingBiome && !isObjectTool(tool) && tool !== 'road' && tool !== 'pan' ? { mask: tool === 'meld' ? null : mask, rotation, opacity: previewOpacity } : null; currentPoint = point; map.cursor = point && { ...point, radius: size }; map.setBrushPreview(point ? preview : null); map.needsDraw = true; scene?.cursor(point, size, point ? preview : null); if (point) $('#coordinates').textContent = `X ${Math.round(point.x)} · Y ${Math.round(point.y)} · ${Math.round(world.sample(point.x, point.y) * 1000)} m`; }
 function activeTool() {
   if (isObjectTool(tool)) return modifiers.shift ? 'erase-object' : tool;
-  if (tool === 'river') return 'river';
+  if (tool === 'road') return 'road';
   let activeTool = modifiers.shift ? (tool === 'paint' || tool === 'erase' ? 'erase' : 'smooth') : tool;
   if (modifiers.alt) activeTool = activeTool === 'raise' ? 'lower' : activeTool === 'lower' ? 'raise' : activeTool;
   return activeTool;
@@ -166,35 +202,41 @@ function activeTool() {
 function paint(point, dt = 1) {
   if (!point || !stroke) return;
   if (isObjectTool(tool)) {
-    const selected = activeTool(), options = { type: objectKind, scale: objectScale, variation: objectVariation, radius: objectRadius, density: objectDensity };
+    const selected = activeTool(), options = { type: objectKind, scale: objectScale, variation: objectVariation, season: objectSeason, lifecycle: objectLifecycle, radius: objectRadius, density: objectDensity };
     if (selected === 'erase-object') eraseObjects(world, stroke, point.x, point.y, objectRadius, objectEraseFilter === 'selected' ? objectKind : 'all');
     else if (selected === 'scatter') scatterObjects(world, stroke, point.x, point.y, options);
     else if (!stroke.objectPlaced) { stroke.objectPlaced = true; placeObject(world, stroke, point.x, point.y, options); }
     $('#object-count').textContent = `${world.objects.length.toLocaleString()} / ${objectLimit(world).toLocaleString()}`;
     return;
   }
-  if (riverGuide) { if (world.inside(point.x, point.y) && riverGuide.length < 4096 && Math.hypot(point.x - riverGuide.at(-1).x, point.y - riverGuide.at(-1).y) > .5) riverGuide.push({ ...point }); return; }
-  dab(world, stroke, point.x, point.y, { tool: activeTool(), radius, strength, rotation, mask: tool === 'meld' ? null : mask, target: stroke.target, dt, biome, customColor, mode: brushMode, strokeHeight });
+  if (roadGuide) {
+    if (world.inside(point.x, point.y)) {
+      if (roadPath === 'straight') roadGuide[1] = { ...point };
+      else if (roadGuide.length < 4096 && Math.hypot(point.x - roadGuide.at(-1).x, point.y - roadGuide.at(-1).y) > .5) roadGuide.push({ ...point });
+    }
+    return;
+  }
+  dab(world, stroke, point.x, point.y, { tool: activeTool(), radius, strength, rotation, mask: tool === 'meld' ? null : mask, target: stroke.target, dt, biome, customColor, creative, mode: brushMode, strokeHeight });
 }
 function startStroke(point) {
   if (!point || !world.inside(point.x, point.y)) return;
   const painting = tool === 'paint' || tool === 'erase';
   if (painting && !world.biomesVisible) { toast('Show the Biomes layer before painting.'); return; }
   if (isObjectTool(tool) && !world.objectsVisible) { toast('Show the Objects layer before editing objects.'); return; }
-  if (tool === 'river' && !world.riversVisible) { toast('Show the River water layer before drawing a river.'); return; }
+  if (tool === 'road' && !world.biomesVisible) { toast('Show the Biomes layer before painting roads.'); return; }
   const selected = activeTool(), label = selected === 'paint' ? `Paint ${paintName()}` : selected === 'scatter' || selected === 'place-object' ? `${selected === 'scatter' ? 'Scatter' : 'Place'} ${objectType(objectKind).name.toLowerCase()}` : labels[selected];
-  stroke = history.begin(`${label}${brushMode === 'blend' && ['raise', 'lower', 'stamp'].includes(selected) ? ' · Blend' : ''}`); stroke.target = world.sample(point.x, point.y);
-  if (tool === 'river') riverGuide = [{ ...point }];
-  strokePath = new StrokePath(point, isObjectTool(tool) ? Math.max(1, objectRadius * .2) : tool === 'river' ? Math.max(3, riverWidth * .25) : Math.max(2, radius * .16)); lastTime = performance.now(); paint(point);
+  stroke = history.begin(`${selected === 'road' ? ROAD_TYPES[roadType].name : label}${brushMode === 'blend' && ['raise', 'lower', 'stamp'].includes(selected) ? ' · Blend' : ''}`); stroke.target = world.sample(point.x, point.y);
+  if (tool === 'road') roadGuide = [{ ...point }];
+  strokePath = new StrokePath(point, isObjectTool(tool) ? Math.max(1, objectRadius * .2) : tool === 'road' ? Math.max(3, roadWidth * .25) : Math.max(2, radius * .16)); lastTime = performance.now(); paint(point);
 }
-function showRiverPreview() { map.riverPreview = riverGuide || []; map.needsDraw = true; if (scene) { scene.rivers.setPreview(riverGuide || [], scene.relief); scene.needsDraw = true; } }
+function showRoadPreview() { map.roadPreview = roadGuide || []; map.roadPreviewWidth = roadWidth; map.needsDraw = true; scene?.setRoadPreview(roadGuide || []); }
 function endStroke() {
   if (stroke) {
     if (isObjectTool(tool) && activeTool() !== 'place-object' && currentPoint) paint(currentPoint);
-    if (riverGuide) {
+    if (roadGuide) {
       if (currentPoint) paint(currentPoint);
-      try { addRiver(world, stroke, riverGuide, { width: riverWidth, depth: riverDepth, natural: riverNatural }); toast('River carved downhill, with water and natural banks. Undo restores the landscape.'); } catch (error) { toast(error.message); }
-      riverGuide = null; showRiverPreview();
+      try { const count = paintRoad(world, stroke, roadGuide, { width: roadWidth, type: roadType, grade: roadGrade }); toast(count ? ROAD_TYPES[roadType].name + ' painted. Undo restores the terrain and color.' : 'Draw a longer road route on land.'); } catch (error) { toast(error.message); }
+      roadGuide = null; showRoadPreview();
     }
     const committed = history.commit(stroke);
     if (committed) changed();
@@ -238,7 +280,7 @@ function bindCanvas(canvas, pointFor, is3D = false) {
     }
     const p = pointFor(e); cursor(p);
     if (stroke && p && strokePath && !['stamp', 'place-object'].includes(activeTool()) && strokePath.move(p, point => paint(point, .65))) lastTime = performance.now();
-    if (riverGuide) showRiverPreview();
+    if (roadGuide) showRoadPreview();
   });
   canvas.addEventListener('pointerup', endStroke); canvas.addEventListener('pointercancel', endStroke); canvas.addEventListener('lostpointercapture', endStroke);
   canvas.addEventListener('pointerleave', () => { if (!stroke) cursor(null); });
@@ -276,6 +318,44 @@ function syncOrbit() { if (scene) { const angle = Math.round(scene.getRotation()
 scene?.controls.addEventListener('change', syncOrbit); syncOrbit();
 $('#reset-angles').onclick = () => { endStroke(); map.setRotation(0); $('#map-rotation').value = 0; $('#map-rotation-value').textContent = '0°'; $('.map-compass').style.transform = ''; scene?.setRotation(140); };
 $('#shadows').onchange = e => { if (scene) { scene.sun.castShadow = e.target.checked; scene.renderer.shadowMap.needsUpdate = true; scene.needsDraw = true; } };
+let scaleGridVisible = true, gridSpacing = 128, cursorReferenceEnabled = true, referenceKind = 'house';
+try {
+  scaleGridVisible = localStorage.getItem('fmm-scale-grid-v1') !== 'false';
+  const spacing = Number(localStorage.getItem('fmm-grid-spacing-v1'));
+  if (Number.isInteger(spacing) && spacing >= 1 && spacing <= 1048576) gridSpacing = spacing;
+  cursorReferenceEnabled = localStorage.getItem('fmm-cursor-reference-v1') !== 'false';
+  const kind = localStorage.getItem('fmm-reference-kind-v1');
+  if (['person', 'house', 'tree'].includes(kind)) referenceKind = kind;
+} catch {}
+const applyScaleGrid = () => {
+  map.scaleGrid = scaleGridVisible; map.gridSpacing = gridSpacing; map.needsDraw = true;
+  scene?.setScaleGrid(scaleGridVisible, gridSpacing);
+  $('#scene-grid-scale').textContent = scaleGridVisible ? 'Grid · ' + gridSpacing.toLocaleString() + ' samples' : 'Perspective';
+};
+$('#scale-grid').checked = scaleGridVisible; $('#grid-spacing').value = gridSpacing; applyScaleGrid();
+$('#scale-grid').onchange = e => {
+  scaleGridVisible = e.target.checked; applyScaleGrid();
+  try { localStorage.setItem('fmm-scale-grid-v1', String(scaleGridVisible)); } catch {}
+};
+$('#grid-spacing').onchange = e => {
+  const value = Number(e.target.value);
+  if (!Number.isInteger(value) || value < 1 || value > 1048576) { e.target.value = gridSpacing; return; }
+  gridSpacing = value; applyScaleGrid();
+  try { localStorage.setItem('fmm-grid-spacing-v1', String(gridSpacing)); } catch {}
+};
+const applyCursorReference = () => {
+  map.referenceEnabled = cursorReferenceEnabled; map.referenceKind = referenceKind; map.needsDraw = true;
+  scene?.setCursorReference(cursorReferenceEnabled, referenceKind);
+};
+$('#cursor-reference').checked = cursorReferenceEnabled; $('#reference-kind').value = referenceKind; applyCursorReference();
+$('#cursor-reference').onchange = e => {
+  cursorReferenceEnabled = e.target.checked; applyCursorReference();
+  try { localStorage.setItem('fmm-cursor-reference-v1', String(cursorReferenceEnabled)); } catch {}
+};
+$('#reference-kind').onchange = e => {
+  referenceKind = e.target.value; applyCursorReference();
+  try { localStorage.setItem('fmm-reference-kind-v1', referenceKind); } catch {}
+};
 $('#relief').onchange = e => { if (scene) { scene.relief = +e.target.value; scene.invalidate(); } };
 syncWorkspaceLimits = initWorkspaceUI(distance => { scene?.setRenderDistance(distance); }, () => world.bounds);
 if (!scene) $('#render-distance').disabled = true;
@@ -284,6 +364,7 @@ $('#world-name').onchange = e => { world.name = e.target.value.trim() || 'Untitl
 $('#help').onclick = () => $('#help-dialog').showModal();
 window.addEventListener('keydown', e => {
   if (['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement.tagName) || $('dialog[open]')) return;
+  if (e.key === 'Escape' && roadGuide) { roadGuide = null; stroke = null; strokePath = null; showRoadPreview(); if (scene) scene.controls.enabled = true; return; }
   if (e.key === 'Escape' && pickingBiome) { setBiomePicking(false); return; }
   if (e.code === 'KeyR' && !e.ctrlKey && !e.metaKey && !e.altKey) { rotateBrushHeld = true; return; }
   if (e.key === 'Shift') { modifiers.shift = true; cursor(currentPoint); }
@@ -291,7 +372,7 @@ window.addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); (e.shiftKey ? $('#redo') : $('#undo')).click(); }
   else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); $('#redo').click(); }
   else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); $('#save').click(); }
-  else if (!e.ctrlKey && !e.metaKey) { const shortcuts = { r: 'raise', l: 'lower', f: 'flatten', s: 'smooth', m: 'meld', t: 'stamp', h: 'pan', b: 'paint', o: 'scatter', e: isObjectTool(tool) ? 'erase-object' : 'erase' }; if (shortcuts[e.key.toLowerCase()]) selectTool(shortcuts[e.key.toLowerCase()]); if (e.key === 'Home') { e.preventDefault(); fit(); } if (e.key === '[' || e.key === ']') { const slider = $(isObjectTool(tool) ? '#object-radius' : '#radius'); slider.value = +slider.value + (e.key === ']' ? 4 : -4); slider.dispatchEvent(new Event('input')); } }
+  else if (!e.ctrlKey && !e.metaKey) { const shortcuts = { r: 'raise', l: 'lower', f: 'flatten', s: 'smooth', m: 'meld', t: 'stamp', b: 'paint', o: 'scatter', e: isObjectTool(tool) ? 'erase-object' : 'erase' }; if (shortcuts[e.key.toLowerCase()]) selectTool(shortcuts[e.key.toLowerCase()]); if (e.key === 'Home') { e.preventDefault(); fit(); } if (e.key === '[' || e.key === ']') { const slider = $(isObjectTool(tool) ? '#object-radius' : '#radius'); slider.value = +slider.value + (e.key === ']' ? 4 : -4); slider.dispatchEvent(new Event('input')); } }
 });
 window.addEventListener('keyup', e => { if (e.code === 'Space') space = false; if (e.code === 'KeyR' && rotateBrushHeld) { rotateBrushHeld = false; if (!rotateBrushUsed) selectTool('raise'); rotateBrushUsed = false; } if (e.key === 'Shift') { modifiers.shift = false; cursor(currentPoint); } }); window.addEventListener('blur', () => { space = false; rotateBrushHeld = false; rotateBrushUsed = false; modifiers = { shift: false, alt: false }; endStroke(); });
 
@@ -329,9 +410,9 @@ async function loadBrushes() {
     if (!result.ok) throw new Error('Selected heightmap brush could not load');
     const data = new Uint16Array(await result.arrayBuffer());
     if (request !== brushManifestRequest) return;
-    if (selectionVersion === brushSelectionRequest && activeBrush === preserveBrush) { mask = loadedBrushMask(brushes.find(brush => brush.id === preserveBrush), data); cursor(currentPoint); }
+    if (selectionVersion === brushSelectionRequest && activeBrush === preserveBrush) { endStroke(); mask = loadedBrushMask(brushes.find(brush => brush.id === preserveBrush), data); updateBrushResolution(); cursor(currentPoint); }
   } else if (!stillAvailable && selectionVersion === brushSelectionRequest && activeBrush === preserveBrush) {
-    activeBrush = 'round'; mask = null; $('#current-brush').textContent = 'Soft round'; cursor(currentPoint);
+    activeBrush = 'round'; mask = null; $('#current-brush').textContent = 'Soft round'; updateBrushResolution(); cursor(currentPoint);
   }
   document.querySelectorAll('[data-brush]').forEach(button => {
     button.classList.toggle('active', button.dataset.brush === activeBrush);
@@ -345,12 +426,12 @@ async function loadBrushes() {
     try {
       let nextMask = null;
       if (brush) {
-        const result = await fetch('/brushes/' + brush.id + '.bin');
+        const result = await fetch('/brushes/' + brush.id + '.bin', { cache: 'no-store' });
         if (!result.ok) throw new Error('Brush could not load');
         nextMask = loadedBrushMask(brush, new Uint16Array(await result.arrayBuffer()));
       }
       if (version !== brushSelectionRequest) return;
-      mask = nextMask; activeBrush = button.dataset.brush; cursor(currentPoint);
+      endStroke(); mask = nextMask; activeBrush = button.dataset.brush; updateBrushResolution(); cursor(currentPoint);
       $('#current-brush').textContent = brush?.name ?? 'Soft round';
       document.querySelectorAll('[data-brush]').forEach(item => item.classList.toggle('active', item === button));
     } catch (error) { toast(error.message); }
@@ -359,10 +440,33 @@ async function loadBrushes() {
     button.hidden = button.dataset.brush !== 'round' && event.target.value !== 'all' && button.dataset.category !== event.target.value;
   });
 }
+function updateBrushResolution() {
+  const panel = $('#native-brush-settings'), button = $('#native-brush-size'), slider = $('#radius');
+  panel.hidden = !mask || ['road', 'meld', 'pan'].includes(tool) || isObjectTool(tool);
+  const width = mask?.width ?? mask?.size, height = mask?.height ?? mask?.size;
+  const nativeSize = mask ? Math.max(width, height) : null;
+  // The slider stores radius; its displayed diameter matches the source's longest side.
+  // Procedural round brushes (including Meld) have no source-resolution limit.
+  const maximum = mask && tool !== 'meld' ? nativeSize / 2 : 2048;
+  slider.min = Math.min(4, maximum); slider.max = maximum;
+  radius = Math.max(+slider.min, Math.min(radius, maximum));
+  slider.value = radius; radius = +slider.value;
+  $('#radius-value').textContent = radius * 2;
+  if (!mask) return;
+  const diameter = radius * 2;
+  $('#brush-resolution').textContent = width.toLocaleString() + ' × ' + height.toLocaleString() + (mask.bitDepth ? ' · ' + mask.bitDepth + '-bit source' : '') + (mask.native === false ? ' · Legacy mask: add its original PNG to Heightmaps.' : '') + '. ' + (diameter < nativeSize ? 'Brush smaller than source: fine pixels merge into terrain samples.' : diameter > nativeSize ? 'Enlarged brush: source pixels span multiple terrain samples.' : 'Native scale: about one source pixel per terrain sample.');
+  button.textContent = 'Use native size · ' + nativeSize.toLocaleString();
+}
+$('#native-brush-size').onclick = () => {
+  if (!mask) return;
+  updateBrushResolution();
+  $('#radius').value = $('#radius').max;
+  $('#radius').dispatchEvent(new Event('input'));
+};
 function loadedBrushMask(brush, data) {
   const width = brush.width ?? brush.size, height = brush.height ?? brush.size;
   if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1 || data.length !== width * height) throw new Error('Heightmap dimensions do not match its data. Scan the brush library again.');
-  return { width, height, size: width, data };
+  return { width, height, size: width, data, bitDepth: brush.bitDepth, native: brush.native };
 }
 $('#refresh-brushes').onclick = async event => {
   const button = event.currentTarget, oldCount = brushCatalog.length;
@@ -378,7 +482,7 @@ await loadBrushes().catch(error => toast(error.message));
 requestAnimationFrame(() => { fit(); refresh(); $('#status').textContent = 'Ready to sculpt'; });
 function frame(time) {
   requestAnimationFrame(frame);
-  if (stroke && currentPoint && tool !== 'river' && accumulatesWhileHeld(activeTool(), brushMode) && time - lastTime > 45) { paint(currentPoint, .7); lastTime = time; }
+  if (stroke && currentPoint && tool !== 'road' && accumulatesWhileHeld(activeTool(), brushMode) && time - lastTime > 45) { paint(currentPoint, .7); lastTime = time; }
   if (world.dirty.size) { const keys = [...world.dirty]; world.dirty.clear(); map.invalidate(keys); scene?.invalidate(keys); }
   renderViews([['2D', map], ['3D', scene]], (name, error) => { console.error(`${name} view:`, error); $('#status').textContent = `${name} paused · use Reset views`; toast(`${name} view paused. Use Reset views to rebuild it; your work is retained.`); });
 }

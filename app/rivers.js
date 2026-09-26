@@ -1,3 +1,4 @@
+import { MAX_HEIGHT } from './height-limits.js';
 import { noise, smoothstep } from './biomes.js';
 
 export const MAX_RIVERS = 128, MAX_RIVER_POINTS = 32768, MAX_RIVER_LENGTH = 8192;
@@ -12,7 +13,7 @@ export function validateRivers(rivers) {
     count += river.points.length; let length = 0;
     for (let i = 0; i < river.points.length; i++) {
       const p = river.points[i];
-      if (!p || !['x', 'y', 'water', 'width'].every(k => Number.isFinite(p[k])) || Math.abs(p.x) > 2 ** 24 || Math.abs(p.y) > 2 ** 24 || p.water < -.95 || p.water > 2 || p.width < 1 || p.width > 64) throw new Error('Invalid river samples');
+      if (!p || !['x', 'y', 'water', 'width'].every(k => Number.isFinite(p[k])) || Math.abs(p.x) > 2 ** 24 || Math.abs(p.y) > 2 ** 24 || p.water < -.95 || p.water > MAX_HEIGHT || p.width < 1 || p.width > 64) throw new Error('Invalid river samples');
       if (i) { length += distance(p, river.points[i - 1]); if (p.water > river.points[i - 1].water + 1e-8) throw new Error('River cannot flow uphill'); }
     }
     if (length > MAX_RIVER_LENGTH + 100) throw new Error('River is too long');
@@ -63,7 +64,7 @@ export function planRiver(world, guide, { width = 18, depth = .03, natural = tru
   }
   for (let pass = 0; pass < 3; pass++) route = route.map((p, i, all) => !i || i === all.length - 1 ? p : ({ x: (all[i - 1].x + p.x * 2 + all[i + 1].x) / 4, y: (all[i - 1].y + p.y * 2 + all[i + 1].y) / 4 }));
   route = resample(route, Math.max(2, width * .22));
-  const points = []; let water = 2, land = false;
+  const points = []; let water = MAX_HEIGHT, land = false;
   for (let i = 0; i < route.length; i++) {
     const p = route[i], h = world.sample(p.x, p.y), step = i ? distance(p, route[i - 1]) : 0;
     water = Math.max(-.95, Math.min(h - depth * .18, water - step * .000025));

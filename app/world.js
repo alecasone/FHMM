@@ -1,3 +1,5 @@
+import { MIN_HEIGHT, MAX_HEIGHT } from './height-limits.js';
+import { creativeColor } from './creative-paint.js';
 import { BIOME_COUNT } from './biomes.js';
 import { objectPatch, objectBytes, applyObjectPatch } from './objects.js';
 export const TILE = 128;
@@ -31,7 +33,7 @@ export class World {
     const tx = Math.floor(x / TILE), ty = Math.floor(y / TILE), key = keyOf(tx, ty);
     let tile = this.tiles.get(key);
     const index = (y - ty * TILE) * TILE + x - tx * TILE;
-    value = Math.fround(clamp(value, -1, 2));
+    value = Math.fround(clamp(value, MIN_HEIGHT, MAX_HEIGHT));
     if ((tile?.[index] ?? Math.fround(FLOOR)) === value) return;
     if (!tile) { tile = new Float32Array(TILE * TILE).fill(FLOOR); this.tiles.set(key, tile); }
     if (stroke) {
@@ -94,7 +96,7 @@ export class World {
     const before = tile.slice(offset, offset + 4), a = Math.min(1, amount);
     const oldAlpha = precise[offset + 3] / 255, alpha = color ? a + oldAlpha * (1 - a) : oldAlpha * (1 - a);
     for (let c = 0; c < 3; c++) {
-      if (color) precise[offset + c] = (color[c] * a + precise[offset + c] * oldAlpha * (1 - a)) / alpha;
+      if (color) precise[offset + c] = (clamp(color[c], 0, 255) * a + precise[offset + c] * oldAlpha * (1 - a)) / alpha;
       tile[offset + c] = Math.round(precise[offset + c]);
     }
     precise[offset + 3] = alpha * 255; tile[offset + 3] = Math.round(alpha * 255);
@@ -205,7 +207,7 @@ export function resetWorld(world, history, preset = 'ocean') {
 }
 
 export function dab(world, stroke, cx, cy, options) {
-  const { radius, strength, tool, mask, rotation = 0, target = 0, dt = 1, biome = 0, customColor = null, mode = 'additive', strokeHeight = .3 } = options;
+  const { radius, strength, tool, mask, rotation = 0, target = 0, dt = 1, biome = 0, customColor = null, creative = null, mode = 'additive', strokeHeight = .3 } = options;
   if (![cx, cy, radius, strength, rotation, target, dt].every(Number.isFinite) || radius <= 0) return;
   const blending = mode === 'blend' && ['raise', 'lower', 'stamp'].includes(tool);
   if (blending && (!stroke?.changes || !Number.isFinite(strokeHeight) || strokeHeight <= 0)) return;
@@ -233,13 +235,17 @@ export function dab(world, stroke, cx, cy, options) {
     if (mask && !meld) {
       const u = (dx * cos + dy * sin + 1) * .5, v = (-dx * sin + dy * cos + 1) * .5;
       const width = mask.width ?? mask.size, height = mask.height ?? mask.size;
-      const mx = clamp(Math.round(u * (width - 1)), 0, width - 1), my = clamp(Math.round(v * (height - 1)), 0, height - 1);
-      weight *= mask.data[my * width + mx] / 65535;
+      // Keep rectangular sources at their original aspect ratio. At native size
+      // each step across the terrain advances one source pixel.
+      const extent = Math.max(width, height);
+      const mx = Math.round((u - .5) * extent + (width - 1) * .5), my = Math.round((v - .5) * extent + (height - 1) * .5);
+      weight *= mx >= 0 && my >= 0 && mx < width && my < height ? mask.data[my * width + mx] / 65535 : 0;
     }
     const current = world.get(x, y), amount = strength * weight * dt;
     if (tool === 'paint' || tool === 'erase') {
       if (current >= world.sea) {
-        if (tool === 'paint' && customColor) world.paintColor(x, y, customColor, amount * .5, stroke);
+        if (tool === 'paint' && creative) world.paintColor(x, y, creativeColor(world, x, y, creative), amount * .5, stroke);
+        else if (tool === 'paint' && customColor) world.paintColor(x, y, customColor, amount * .5, stroke);
         else {
           world.paintColor(x, y, null, amount * .5, stroke);
           world.paintBiome(x, y, tool === 'erase' ? -1 : biome, amount * .5, stroke);

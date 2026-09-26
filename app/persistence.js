@@ -1,3 +1,4 @@
+import { MIN_HEIGHT, MAX_HEIGHT } from './height-limits.js';
 import { world, history, map, scene, refresh, toast, endStroke, fit, resetViews } from './main.js';
 import { World, History, TILE } from './world.js';
 import { encodeWorld, decodeWorld } from './file-format.js';
@@ -37,9 +38,9 @@ $('#blank').onclick = () => $('#reset-world').click();
 $('#export').onclick = () => {
   endStroke(); const b = world.bounds, w = b.maxX - b.minX, h = b.maxY - b.minY;
   if (w * h > 16 * 1024 * 1024) { toast('Heightmap export is limited to 16 million samples. Save the tiled .fmm world for larger maps.'); return; }
-  const header = new TextEncoder().encode(`P5\n# FMM heights: -1 to 2; sea level ${world.sea}; origin ${b.minX},${b.minY}\n${w} ${h}\n65535\n`), pixels = new Uint8Array(w * h * 2), view = new DataView(pixels.buffer);
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) view.setUint16((y * w + x) * 2, Math.round((world.get(b.minX + x, b.minY + y) + 1) / 3 * 65535), false);
-  download(new Blob([header, pixels], { type: 'image/x-portable-graymap' }), `${filename()}-16bit.pgm`); toast('Exported a lossless 16-bit PGM heightmap.');
+  const header = new TextEncoder().encode(`P5\n# FMM heights: ${MIN_HEIGHT} to ${MAX_HEIGHT}; sea level ${world.sea}; origin ${b.minX},${b.minY}\n${w} ${h}\n65535\n`), pixels = new Uint8Array(w * h * 2), view = new DataView(pixels.buffer);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) view.setUint16((y * w + x) * 2, Math.round((world.get(b.minX + x, b.minY + y) - MIN_HEIGHT) / (MAX_HEIGHT - MIN_HEIGHT) * 65535), false);
+  download(new Blob([header, pixels], { type: 'image/x-portable-graymap' }), `${filename()}-16bit.pgm`); toast('Exported a 16-bit PGM heightmap spanning -1,000 to +5,000 meters.');
 };
 database.then(async () => {
   const version = generation, revision = world.revision; const saved = await transact('readonly', s => s.get('recovery'));
