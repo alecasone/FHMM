@@ -1,4 +1,4 @@
-import { MAX_MAP_ZOOM, wheelZoomFactor } from './camera-navigation.js';
+import { MAX_MAP_ZOOM, wheelZoomFactor, wheelPixels } from './camera-navigation.js';
 import { DEFAULT_WATER_STYLE, waterColor } from './water-colors.js';
 import { objectIcon } from './object-icons.js';
 import { World, History, seedWorld, dab, TILE, resetWorld } from './world.js';
@@ -21,8 +21,8 @@ const map = new MapView($('#map'), world);
 let scene;
 try { scene = new SceneView($('#scene'), world); } catch (error) { console.error(error); $('.scene-error').hidden = false; }
 let tool = 'raise', biome = 0, radius = 56, strength = .45, rotation = 0, brushMode = 'blend', strokeHeight = .3, mask = null, stroke = null, strokePath = null, currentPoint = null, space = false, pan = null;
-let modifiers = { shift: false, alt: false }, lastTime = 0, toastTimer;
-let rotateBrushHeld = false, rotateBrushUsed = false;
+let modifiers = { shift: false, alt: false }, lastTime = 0, toastTimer, pendingHover = null;
+let rotateBrushHeld = false, rotateBrushUsed = false, rotateBrushStarted = 0;
 let syncWorkspaceLimits = () => {};
 let customColor = null, creative = null, waterMode = false, waterTint = [72, 181, 166], waterStyleBefore = null;
 const colorHex = rgb => '#' + rgb.map(v => Math.round(v).toString(16).padStart(2, '0')).join('');
@@ -267,8 +267,11 @@ function endStroke() {
   pan = null; if (scene) scene.controls.enabled = true;
 }
 function bindCanvas(canvas, pointFor, is3D = false) {
+  canvas.tabIndex = 0;
   canvas.addEventListener('contextmenu', e => e.preventDefault());
   canvas.addEventListener('pointerdown', e => {
+    pendingHover = null;
+    canvas.focus({ preventScroll: true });
     if (e.button !== 0 && e.button !== 1) return;
     if (pickingBiome && e.button === 0) {
       const point = pointFor(e), index = point ? pickBiome(world, point.x, point.y) : null;
@@ -292,18 +295,22 @@ function bindCanvas(canvas, pointFor, is3D = false) {
       else { const delta = map.screenDelta(dx, dy); map.center.x -= delta.x; map.center.y -= delta.y; map.needsDraw = true; }
       pan.x = e.clientX; pan.y = e.clientY; return;
     }
+    // Hover is display-only: keep the latest pointer position once per frame.
+    // Active strokes still consume every event through StrokePath.
+    if (!stroke) { pendingHover = { pointFor, event: { clientX: e.clientX, clientY: e.clientY } }; return; }
     const p = pointFor(e); cursor(p);
     if (stroke && p && strokePath && !['stamp', 'place-object'].includes(activeTool()) && strokePath.move(p, point => paint(point, .65))) lastTime = performance.now();
     if (roadGuide) showRoadPreview();
   });
   canvas.addEventListener('pointerup', endStroke); canvas.addEventListener('pointercancel', endStroke); canvas.addEventListener('lostpointercapture', endStroke);
-  canvas.addEventListener('pointerleave', () => { if (!stroke) cursor(null); });
+  canvas.addEventListener('pointerleave', () => { if (!stroke) { pendingHover = null; cursor(null); } });
 }
 bindCanvas($('#map'), e => map.point(e)); if (scene) bindCanvas(scene.renderer.domElement, e => scene.point(e), true);
 function rotateBrushFromWheel(e) {
   if (!rotateBrushHeld || !e.deltaY) return;
   e.preventDefault(); e.stopImmediatePropagation(); rotateBrushUsed = true; endStroke();
-  rotation = (rotation + e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 800 : 1) * .0025) % (Math.PI * 2);
+  const delta = Math.max(-120, Math.min(120, wheelPixels(e)));
+  rotation = (rotation + delta * .0025) % (Math.PI * 2);
   if (rotation < 0) rotation += Math.PI * 2;
   const degrees = Math.round(rotation * 180 / Math.PI) % 360;
   $('#rotation').value = degrees; $('#rotation-value').textContent = degrees + '°'; cursor(currentPoint);
@@ -317,7 +324,7 @@ scene?.renderer.domElement.addEventListener('wheel', e => {
   const point = scene.zoomAt(e); cursor(point ? { x: point.x, y: point.z } : null);
 }, { capture: true, passive: false });
 function fit() { map.resize(); map.fit(); const b = world.bounds; scene?.resize(); scene?.focus((b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2, true); }
-function resetViews(notify = true) { endStroke(); currentPoint = null; map.reset(); scene?.reset(); fit(); $('.scene-error').hidden = !!scene && !scene.contextLost; $('#coordinates').textContent = 'X 0 · Y 0'; $('#status').textContent = 'Ready to sculpt'; if (notify) toast('Views rebuilt. Your terrain and paint are unchanged.'); }
+function resetViews(notify = true) { endStroke(); pendingHover = null; currentPoint = null; map.reset(); scene?.reset(); fit(); $('.scene-error').hidden = !!scene && !scene.contextLost; $('#coordinates').textContent = 'X 0 · Y 0'; $('#status').textContent = 'Ready to sculpt'; if (notify) toast('Views rebuilt. Your terrain and paint are unchanged.'); }
 $('#reset-views').onclick = () => resetViews();
 $('#reset-world').onclick = () => { endStroke(); $('#reset-dialog').showModal(); };
 document.querySelectorAll('[data-reset]').forEach(button => button.onclick = () => { endStroke(); resetWorld(world, history, button.dataset.reset); $('#reset-dialog').close(); resetViews(false); changed(); toast('World reset. Undo restores the previous terrain and paint.'); });
@@ -366,7 +373,7 @@ $('#sea').oninput = e => { seaBefore ??= world.sea; world.sea = +e.target.value 
 $('#sea').onchange = () => { history.metadata('Change sea level', { sea: seaBefore ?? world.sea }, { sea: world.sea }); seaBefore = null; changed(); };
 $('#ocean').onchange = e => { const before = world.ocean; world.ocean = e.target.checked; history.metadata(world.ocean ? 'Show ocean' : 'Hide ocean', { ocean: before }, { ocean: world.ocean }); map.invalidate(); scene?.invalidate(); changed(); };
 $('#biomes-visible').onchange = e => { const before = world.biomesVisible; world.biomesVisible = e.target.checked; history.metadata(world.biomesVisible ? 'Show biome paint' : 'Hide biome paint', { biomesVisible: before }, { biomesVisible: world.biomesVisible }); map.invalidate(); scene?.invalidate(); changed(); };
-$('#rivers-visible').onchange = e => { endStroke(); const before = world.riversVisible; world.riversVisible = e.target.checked; history.metadata(world.riversVisible ? 'Show river water' : 'Hide river water', { riversVisible: before }, { riversVisible: world.riversVisible }); world.invalidate(); map.invalidate(); scene?.invalidate(); changed(); };
+$('#rivers-visible').onchange = e => { endStroke(); const before = world.riversVisible; world.riversVisible = e.target.checked; history.metadata(world.riversVisible ? 'Show river water' : 'Hide river water', { riversVisible: before }, { riversVisible: world.riversVisible }); world.invalidate(false); map.invalidate(); scene?.invalidate(); changed(); };
 $('#objects-visible').onchange = e => { endStroke(); const before = world.objectsVisible; world.objectsVisible = e.target.checked; history.metadata(world.objectsVisible ? 'Show objects' : 'Hide objects', { objectsVisible: before }, { objectsVisible: world.objectsVisible }); world.revision++; map.needsDraw = true; changed(); };
 for (const field of ['sun-elevation', 'sun-azimuth']) $(`#${field}`).oninput = e => { $(`#${field}-value`).textContent = `${e.target.value}°`; const property = field === 'sun-elevation' ? 'sunElevation' : 'sunAzimuth'; map[property] = +e.target.value; map.invalidate(); if (scene) { scene[property] = +e.target.value; scene.updateSun(); } };
 $('#map-rotation').oninput = e => { endStroke(); map.setRotation(+e.target.value); $('#map-rotation-value').textContent = `${e.target.value}°`; $('.map-compass').style.transform = `rotate(${e.target.value}deg)`; };
@@ -419,19 +426,43 @@ if (!scene) $('#render-distance').disabled = true;
 $('#expand').onclick = () => { endStroke(); const before = structuredClone(world.bounds); world.expand($('#expand-direction').value); history.metadata('Expand world borders', { bounds: before }, { bounds: structuredClone(world.bounds) }); scene?.syncBounds(); fit(); changed(); toast('Borders expanded. New terrain is ready to paint.'); };
 $('#world-name').onchange = e => { world.name = e.target.value.trim() || 'Untitled world'; changed(); };
 $('#help').onclick = () => $('#help-dialog').showModal();
+const isRotationKey = e => e.code === 'KeyR' || e.key?.toLowerCase() === 'r';
+function editingTextOrChoice() {
+  const active = document.activeElement;
+  return active?.isContentEditable || active?.tagName === 'TEXTAREA' || active?.tagName === 'SELECT' ||
+    (active?.tagName === 'INPUT' && !['range', 'checkbox', 'radio', 'button', 'submit', 'reset'].includes(active.type));
+}
+function clearBrushRotation() { rotateBrushHeld = false; rotateBrushUsed = false; rotateBrushStarted = 0; }
 window.addEventListener('keydown', e => {
+  if (e.isComposing || $('dialog[open]')) return;
+  // Sliders and checkboxes retain focus after clicking; they must not swallow R.
+  // Text fields, color pickers and select type-ahead keep their normal keyboard input.
+  if (isRotationKey(e) && !e.ctrlKey && !e.metaKey && !e.altKey && !editingTextOrChoice()) {
+    e.preventDefault();
+    if (!rotateBrushHeld) { rotateBrushUsed = false; rotateBrushStarted = performance.now(); }
+    rotateBrushHeld = true; return;
+  }
   if (['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement.tagName) || $('dialog[open]')) return;
   if (e.key === 'Escape' && roadGuide) { roadGuide = null; stroke = null; strokePath = null; showRoadPreview(); if (scene) scene.controls.enabled = true; return; }
   if (e.key === 'Escape' && pickingBiome) { setBiomePicking(false); return; }
-  if (e.code === 'KeyR' && !e.ctrlKey && !e.metaKey && !e.altKey) { rotateBrushHeld = true; return; }
   if (e.key === 'Shift') { modifiers.shift = true; cursor(currentPoint); }
   if (e.code === 'Space') { if (['SUMMARY', 'BUTTON'].includes(document.activeElement.tagName)) return; e.preventDefault(); space = true; }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); (e.shiftKey ? $('#redo') : $('#undo')).click(); }
   else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); $('#redo').click(); }
   else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); $('#save').click(); }
-  else if (!e.ctrlKey && !e.metaKey) { const shortcuts = { r: 'raise', l: 'lower', f: 'flatten', s: 'smooth', m: 'meld', t: 'stamp', b: 'paint', o: 'scatter', e: isObjectTool(tool) ? 'erase-object' : 'erase' }; if (shortcuts[e.key.toLowerCase()]) selectTool(shortcuts[e.key.toLowerCase()]); if (e.key === 'Home') { e.preventDefault(); fit(); } if (e.key === '[' || e.key === ']') { const slider = $(isObjectTool(tool) ? '#object-radius' : '#radius'); slider.value = +slider.value + (e.key === ']' ? 4 : -4); slider.dispatchEvent(new Event('input')); } }
+  else if (!e.ctrlKey && !e.metaKey) { const shortcuts = { l: 'lower', f: 'flatten', s: 'smooth', m: 'meld', t: 'stamp', b: 'paint', o: 'scatter', e: isObjectTool(tool) ? 'erase-object' : 'erase' }; if (shortcuts[e.key.toLowerCase()]) selectTool(shortcuts[e.key.toLowerCase()]); if (e.key === 'Home') { e.preventDefault(); fit(); } if (e.key === '[' || e.key === ']') { const slider = $(isObjectTool(tool) ? '#object-radius' : '#radius'); slider.value = +slider.value + (e.key === ']' ? 4 : -4); slider.dispatchEvent(new Event('input')); } }
 });
-window.addEventListener('keyup', e => { if (e.code === 'Space') space = false; if (e.code === 'KeyR' && rotateBrushHeld) { rotateBrushHeld = false; if (!rotateBrushUsed) selectTool('raise'); rotateBrushUsed = false; } if (e.key === 'Shift') { modifiers.shift = false; cursor(currentPoint); } }); window.addEventListener('blur', () => { space = false; rotateBrushHeld = false; rotateBrushUsed = false; modifiers = { shift: false, alt: false }; endStroke(); });
+window.addEventListener('keyup', e => {
+  if (e.code === 'Space') space = false;
+  if (isRotationKey(e) && rotateBrushHeld) {
+    const tapped = !rotateBrushUsed && performance.now() - rotateBrushStarted < 350;
+    clearBrushRotation();
+    if (tapped && !editingTextOrChoice() && !$('dialog[open]') && !e.ctrlKey && !e.metaKey && !e.altKey) selectTool('raise');
+  }
+  if (e.key === 'Shift') { modifiers.shift = false; cursor(currentPoint); }
+});
+window.addEventListener('blur', () => { space = false; clearBrushRotation(); modifiers = { shift: false, alt: false }; endStroke(); });
+document.addEventListener('visibilitychange', () => { if (document.hidden) clearBrushRotation(); });
 
 let brushCatalog = [], brushManifestRequest = 0, brushSelectionRequest = 0, activeBrush = 'round';
 async function loadBrushes() {
@@ -539,6 +570,7 @@ await loadBrushes().catch(error => toast(error.message));
 requestAnimationFrame(() => { fit(); refresh(); $('#status').textContent = 'Ready to sculpt'; });
 function frame(time) {
   requestAnimationFrame(frame);
+  if (pendingHover) { const hover = pendingHover; pendingHover = null; cursor(hover.pointFor(hover.event)); }
   if (stroke && currentPoint && tool !== 'road' && accumulatesWhileHeld(activeTool(), brushMode) && time - lastTime > 45) { paint(currentPoint, .7); lastTime = time; }
   if (world.dirty.size) { const keys = [...world.dirty]; world.dirty.clear(); map.invalidate(keys); scene?.invalidate(keys); }
   renderViews([['2D', map], ['3D', scene]], (name, error) => { console.error(`${name} view:`, error); $('#status').textContent = `${name} paused · use Reset views`; toast(`${name} view paused. Use Reset views to rebuild it; your work is retained.`); });

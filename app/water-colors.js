@@ -9,14 +9,15 @@ export function validateWaterStyle(style) {
 }
 const palettes = new WeakMap();
 const rgb = hex => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16));
-export function waterColor(depth, style = DEFAULT_WATER_STYLE, tint = null, offset = 0) {
+export function waterColor(depth, style = DEFAULT_WATER_STYLE, tint = null, offset = 0, out = [0, 0, 0]) {
   let palette = palettes.get(style);
   if (!palette) { palette = [rgb(style.shallow), rgb(style.deep)]; palettes.set(style, palette); }
   const t = Math.pow(Math.max(0, Math.min(1, depth * 1000 / style.depth)), style.curve);
   const alpha = (tint?.[offset + 3] ?? 0) / 255;
-  return palette[0].map((value, c) => {
-    const natural = value + (palette[1][c] - value) * t;
+  for (let c = 0; c < 3; c++) {
+    const natural = palette[0][c] + (palette[1][c] - palette[0][c]) * t;
     // Regional color remains visible in deep water, while retaining a strong depth cue.
-    return natural * (1 - alpha) + (tint?.[offset + c] ?? 0) * (1 - t * .84) * alpha;
-  });
+    out[c] = natural * (1 - alpha) + (tint?.[offset + c] ?? 0) * (1 - t * .84) * alpha;
+  }
+  return out;
 }

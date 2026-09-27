@@ -18,7 +18,7 @@ export class World {
     this.objects = []; this.objectsVisible = true; this.objectsRevision = 0;
     this.bounds = { minX: -512, minY: -512, maxX: 512, maxY: 512 };
     this.sea = 0; this.ocean = true; this.name = 'The Unwritten Isles';
-    this.dirty = new Set(); this.revision = 0;
+    this.dirty = new Set(); this.revision = 0; this.terrainRevision = 0; this.waterRevision = 0;
   }
   inside(x, y) { const b = this.bounds; return x >= b.minX && y >= b.minY && x < b.maxX && y < b.maxY; }
   get(x, y) {
@@ -51,7 +51,7 @@ export class World {
     if (lx <= 4) xs.push(-1); if (lx >= TILE - 5) xs.push(1);
     if (ly <= 4) ys.push(-1); if (ly >= TILE - 5) ys.push(1);
     for (const ox of xs) for (const oy of ys) this.dirty.add(keyOf(tx + ox, ty + oy));
-    this.revision++;
+    this.terrainRevision++; this.revision++;
   }
   paintBiome(x, y, biome, amount, stroke) {
     if (!this.inside(x, y) || !Number.isFinite(amount) || amount <= 0 || !Number.isInteger(biome) || biome < -1 || biome >= BIOME_COUNT) return;
@@ -83,7 +83,7 @@ export class World {
     if (before.every((v, b) => v === tile[offset + b])) return;
     if (stroke) { let changes = stroke.biomeChanges.get(key); if (!changes) { changes = new Map(); stroke.biomeChanges.set(key, changes); } if (!changes.has(index)) changes.set(index, before); }
     this.dirty.add(key); this.revision++;
-    if (x - tx * TILE <= 4 || y - ty * TILE <= 4 || x - tx * TILE >= TILE - 5 || y - ty * TILE >= TILE - 5) this.touch(tx, ty);
+    if (x - tx * TILE <= 4 || y - ty * TILE <= 4 || x - tx * TILE >= TILE - 5 || y - ty * TILE >= TILE - 5) this.touch(tx, ty, false);
   }
   paintColor(x, y, color, amount, stroke, channel = 'colors') {
     if (!this.inside(x, y) || !Number.isFinite(amount) || amount <= 0) return;
@@ -110,14 +110,21 @@ export class World {
     if (!changes) { changes = new Map(); stroke[changesKey].set(key, changes); }
     if (!changes.has(index)) changes.set(index, before);
     this.dirty.add(key); this.revision++;
-    if (x - tx * TILE <= 4 || y - ty * TILE <= 4 || x - tx * TILE >= TILE - 5 || y - ty * TILE >= TILE - 5) this.touch(tx, ty);
+    if (channel === 'waterPaint') this.waterRevision++;
+    if (x - tx * TILE <= 4 || y - ty * TILE <= 4 || x - tx * TILE >= TILE - 5 || y - ty * TILE >= TILE - 5) this.touch(tx, ty, false);
   }
-  touch(tx, ty) {
+  touch(tx, ty, terrain = true) {
     // Include neighbors: shared mesh borders and slope shading depend on their samples.
     for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) this.dirty.add(keyOf(tx + dx, ty + dy));
+    if (terrain) this.terrainRevision++;
     this.revision++;
   }
-  invalidate() { for (const map of [this.tiles, this.biomes, this.colors, this.waterPaint]) for (const key of map.keys()) this.dirty.add(key); this.revision++; }
+  invalidate(dataChanged = true) {
+    for (const map of [this.tiles, this.biomes, this.colors, this.waterPaint]) for (const key of map.keys()) this.dirty.add(key);
+    // Full replacements mutate maps directly. Appearance metadata only needs a redraw.
+    if (dataChanged) { this.terrainRevision++; this.waterRevision++; }
+    this.revision++;
+  }
   expand(direction, tiles = 2) {
     const amount = TILE * tiles;
     if (direction === 'all' || direction === 'west') this.bounds.minX -= amount;
@@ -171,7 +178,7 @@ export class History {
   }
   apply(entry, forward) {
     if (entry.objects) applyObjectPatch(this.world, entry.objects, forward);
-    if (entry.before && entry.after) { Object.assign(this.world, structuredClone(forward ? entry.after : entry.before)); this.world.invalidate(); }
+    if (entry.before && entry.after) { Object.assign(this.world, structuredClone(forward ? entry.after : entry.before)); this.world.invalidate(false); }
     if (entry.patches) for (const patch of entry.patches) {
       const custom = patch.channel === 'colors' || patch.channel === 'waterPaint', paint = custom || patch.channel === 'biomes', store = custom ? this.world[patch.channel] : paint ? this.world.biomes : this.world.tiles, stride = custom ? 4 : paint ? BIOME_COUNT : 1;
       let tile = store.get(patch.key);
@@ -179,7 +186,8 @@ export class History {
       const values = forward ? patch.after : patch.before;
       for (let i = 0; i < patch.indices.length; i++) for (let b = 0; b < stride; b++) tile[patch.indices[i] * stride + b] = values[i * stride + b];
       if (entry.reset && tile.every(v => v === (paint ? 0 : Math.fround(FLOOR)))) store.delete(patch.key);
-      const [x, y] = patch.key.split(',').map(Number); this.world.touch(x, y);
+      if (patch.channel === 'waterPaint') this.world.waterRevision++;
+      const [x, y] = patch.key.split(',').map(Number); this.world.touch(x, y, !paint);
     }
   }
   undo() { if (!this.cursor) return false; this.apply(this.entries[--this.cursor], false); return true; }

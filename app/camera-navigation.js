@@ -4,8 +4,12 @@ export const MAX_MAP_ZOOM = 64;
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
 // Normalize mouse wheels, line/page scrolling and trackpad pinch in both views.
+export function wheelPixels(event) {
+  const pixels = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 100 : 1);
+  return Number.isFinite(pixels) ? pixels : 0;
+}
 export function wheelZoomFactor(event) {
-  const pixels = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 100 : 1) * (event.ctrlKey ? 10 : 1);
+  const pixels = wheelPixels(event) * (event.ctrlKey ? 10 : 1);
   return Number.isFinite(pixels) ? Math.exp(clamp(pixels * .001, -.5, .5)) : 1;
 }
 

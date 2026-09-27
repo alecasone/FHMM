@@ -21,7 +21,7 @@ export function noise(x, y) {
   const ix = Math.floor(x), iy = Math.floor(y), fx = smoothstep(0, 1, x - ix), fy = smoothstep(0, 1, y - iy);
   return blend(blend(hash(ix, iy), hash(ix + 1, iy), fx), blend(hash(ix, iy + 1), hash(ix + 1, iy + 1), fx), fy);
 }
-export function surfaceColor(height, sea, x, y, slope, paint, offset = 0, enabled = true, colors = null, colorOffset = 0) {
+export function surfaceColor(height, sea, x, y, slope, paint, offset = 0, enabled = true, colors = null, colorOffset = 0, rgb = [0, 0, 0]) {
   const elevation = height - sea;
   const patch = noise(x * .026, y * .026), grain = hash(Math.floor(x), Math.floor(y));
   const variation = clamp01(patch * .75 + noise(x * .19, y * .19) * .25);
@@ -31,7 +31,7 @@ export function surfaceColor(height, sea, x, y, slope, paint, offset = 0, enable
   const snowline = smoothstep(.64 + (patch - .5) * .09, .86, elevation) * (1 - cliff * .8);
   const coast = 1 - smoothstep(.002, .026, elevation);
   const rock = BIOMES[8], snow = BIOMES[9], weights = paint;
-  const rgb = [0, 0, 0]; let coverage = 0;
+  let coverage = 0;
   if (enabled && weights) for (let b = 0; b < BIOME_COUNT; b++) coverage += weights[offset + b];
   for (let c = 0; c < 3; c++) {
     const rockValue = blend(rock.low[c], rock.high[c], variation);

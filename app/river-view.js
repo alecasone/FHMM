@@ -3,7 +3,7 @@ import { riverSections } from './rivers.js';
 
 export class RiverView {
   constructor(scene, world) {
-    this.world = world; this.revision = -1; this.time = { value: 0 }; this.lastFrame = 0;
+    this.world = world; this.terrainRevision = -1; this.time = { value: 0 }; this.lastFrame = 0;
     const material = new THREE.MeshStandardMaterial({ color: '#428f9f', roughness: .68, metalness: .02, transparent: true, opacity: .94, side: THREE.DoubleSide, depthWrite: false });
     material.onBeforeCompile = shader => {
       shader.uniforms.riverTime = this.time;
@@ -18,9 +18,10 @@ export class RiverView {
     this.preview.geometry.dispose(); this.preview.geometry = new THREE.BufferGeometry().setFromPoints(points.map(p => new THREE.Vector3(p.x, Math.max(this.world.sample(p.x, p.y), this.world.ocean ? this.world.sea : -1) * relief + 2, p.y))); this.preview.visible = points.length > 1;
   }
   update(relief, bounds) {
-    const signature = [relief, bounds.minX, bounds.minY, bounds.maxX, bounds.maxY].join(','); let changed = false;
-    if (this.revision !== this.world.revision || signature !== this.signature) {
-      this.revision = this.world.revision; this.signature = signature; changed = true;
+    const world = this.world, wb = world.bounds;
+    const signature = [relief, world.sea, world.ocean, bounds.minX, bounds.minY, bounds.maxX, bounds.maxY, wb.minX, wb.minY, wb.maxX, wb.maxY].join(','); let changed = false;
+    if (this.terrainRevision !== world.terrainRevision || this.rivers !== world.rivers || signature !== this.signature) {
+      this.terrainRevision = world.terrainRevision; this.rivers = world.rivers; this.signature = signature; changed = true;
       const positions = [], normals = [], flow = [];
       const vertex = (p, edge, side) => { positions.push(edge.x, p.water * relief + .13, edge.y); flow.push(side, p.along); const nx = p.normalX * relief, nz = p.normalY * relief, length = Math.hypot(nx, 1, nz); normals.push(nx / length, 1 / length, nz / length); };
       for (const river of this.world.rivers) {

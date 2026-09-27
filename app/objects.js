@@ -200,6 +200,30 @@ function indexInsert(index, o) {
   if (!index.cells.has(key)) index.cells.set(key, []);
   index.cells.get(key).push(o);
 }
+// Yield anchors without scanning every object in a large world. Drawing order is
+// spatial, so callers needing painter's order should retain their ordered pass.
+export function* objectsInBounds(world, bounds) {
+  const minX = Math.max(bounds.minX, world.bounds.minX), minY = Math.max(bounds.minY, world.bounds.minY);
+  const maxX = Math.min(bounds.maxX, world.bounds.maxX), maxY = Math.min(bounds.maxY, world.bounds.maxY);
+  if (!(minX < maxX && minY < maxY) || !world.objects.length) return;
+  const index = spatialIndex(world), left = Math.floor(minX / CELL), top = Math.floor(minY / CELL);
+  const right = Math.ceil(maxX / CELL) - 1, bottom = Math.ceil(maxY / CELL) - 1;
+  for (const cell of cellsInBounds(index, left, top, right, bottom)) for (const o of cell)
+    if (o.x >= minX && o.x < maxX && o.y >= minY && o.y < maxY) yield o;
+}
+function* cellsInBounds(index, left, top, right, bottom) {
+  if ((right - left + 1) * (bottom - top + 1) <= index.cells.size) {
+    for (let cy = top; cy <= bottom; cy++) for (let cx = left; cx <= right; cx++) {
+      const cell = index.cells.get(`${cx},${cy}`); if (cell) yield cell;
+    }
+  } else {
+    // Broad views over sparse maps visit occupied cells, not empty coordinates.
+    for (const [key, cell] of index.cells) {
+      const separator = key.indexOf(','), cx = Number(key.slice(0, separator)), cy = Number(key.slice(separator + 1));
+      if (cx >= left && cx <= right && cy >= top && cy <= bottom) yield cell;
+    }
+  }
+}
 function nearby(index, x, y, radius, visit) {
   for (let cy = Math.floor((y - radius) / CELL); cy <= Math.floor((y + radius) / CELL); cy++)
     for (let cx = Math.floor((x - radius) / CELL); cx <= Math.floor((x + radius) / CELL); cx++)

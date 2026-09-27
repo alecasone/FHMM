@@ -43,23 +43,31 @@ export class OceanView {
       tile.grid.visible.value = this.gridVisible ? 1 : 0; tile.grid.spacing.value = this.gridSpacing;
       this.tiles.set(key, tile); this.scene.add(mesh);
     }
+    tile.mesh.position.set(tx * TILE + TILE / 2, world.sea * relief + WATER_SURFACE_OFFSET, ty * TILE + TILE / 2);
+    tile.mesh.visible = world.ocean; this.pending.delete(key);
+    const signature = [world.terrainRevision, world.waterRevision, world.sea, world.bounds.maxX, world.bounds.maxY].join(',');
+    if (tile.signature === signature && tile.style === world.waterStyle) return;
+    tile.signature = signature; tile.style = world.waterStyle;
+    // Resolve the four source tiles once, preserving the shared border samples.
+    const keys = [key, keyOf(tx + 1, ty), keyOf(tx, ty + 1), keyOf(tx + 1, ty + 1)];
+    const heights = keys.map(k => world.tiles.get(k)), paints = keys.map(k => world.waterPaint.get(k));
+    const originX = tx * TILE, originY = ty * TILE, floor = Math.fround(FLOOR);
     // Plane UVs run south-to-north; store rows in that order without upload-time flipping.
-    const bytes = tile.texture.image.data;
+    const bytes = tile.texture.image.data, rgb = [0, 0, 0];
     for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
-      const wx = Math.min(world.bounds.maxX - 1, tx * TILE + x), wy = Math.min(world.bounds.maxY - 1, ty * TILE + y);
-      const px = Math.floor(wx / TILE), py = Math.floor(wy / TILE), offset = ((wy - py * TILE) * TILE + wx - px * TILE) * 4;
-      const rgb = waterColor(world.sea - world.get(wx, wy), world.waterStyle, world.waterPaint.get(keyOf(px, py)), offset), i = ((TILE - y) * size + x) * 4;
+      const lx = Math.min(x, world.bounds.maxX - 1 - originX), ly = Math.min(y, world.bounds.maxY - 1 - originY);
+      const source = (lx >= TILE ? 1 : 0) + (ly >= TILE ? 2 : 0), index = (ly % TILE) * TILE + lx % TILE;
+      waterColor(world.sea - (heights[source]?.[index] ?? floor), world.waterStyle, paints[source], index * 4, rgb);
+      const i = ((TILE - y) * size + x) * 4;
       bytes[i] = Math.round(rgb[0]); bytes[i + 1] = Math.round(rgb[1]); bytes[i + 2] = Math.round(rgb[2]); bytes[i + 3] = 255;
     }
     tile.texture.needsUpdate = true;
-    tile.mesh.position.set(tx * TILE + TILE / 2, world.sea * relief + WATER_SURFACE_OFFSET, ty * TILE + TILE / 2);
-    tile.mesh.visible = world.ocean; this.pending.delete(key);
   }
   update(relief) {
-    const world = this.world, signature = JSON.stringify([world.waterStyle, world.sea, world.ocean, relief, world.bounds]);
-    let changed = signature !== this.signature;
+    const world = this.world, b = world.bounds, signature = [world.sea, world.ocean, relief, b.minX, b.minY, b.maxX, b.maxY].join(',');
+    let changed = signature !== this.signature || this.style !== world.waterStyle;
     if (changed) {
-      this.signature = signature; this.invalidate();
+      this.signature = signature; this.style = world.waterStyle; this.invalidate();
       const rgb = waterColor(world.sea - FLOOR, world.waterStyle);
       this.base.material.color.setRGB(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255, THREE.SRGBColorSpace);
       // Both surfaces share sea level; render order and depthWrite separate them.

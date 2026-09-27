@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { objectGroundHeight } from './objects.js';
+import { objectGroundHeight, objectsInBounds } from './objects.js';
 import { detailedTree } from './detailed-scenery.js';
 import { variantKey, objectLife, objectSeason, lifeScale, isLivingType } from './object-variants.js';
 import { addSceneryParts } from './scenery-models.js';
@@ -47,29 +47,43 @@ export function createObjectGeometry(type, season = 'summer', lifecycle = 'adult
 
 export class ObjectView {
   constructor(scene, world) {
-    this.scene = scene; this.world = world; this.revision = -1; this.meshes = new Map();
-    this.geometries = new Map();
+    this.scene = scene; this.world = world; this.terrainRevision = -1; this.objectsRevision = -1; this.meshes = new Map();
+    this.geometries = new Map(); this.groups = new Map();
     this.material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, flatShading: true });
     this.transform = new THREE.Object3D(); this.color = new THREE.Color();
   }
   update(relief, bounds, step = 2) {
-    const world = this.world, signature = [relief, step, world.sea, world.objectsVisible, bounds.minX, bounds.minY, bounds.maxX, bounds.maxY].join(',');
-    if (this.revision === world.revision && this.signature === signature) return false;
-    this.revision = world.revision; this.signature = signature;
-    const groups = new Map();
-    if (world.objectsVisible) for (const o of world.objects) {
-      if (!world.inside(o.x, o.y) || o.x < bounds.minX || o.x >= bounds.maxX || o.y < bounds.minY || o.y >= bounds.maxY || world.sample(o.x, o.y) <= world.sea + .002) continue;
+    const world = this.world, wb = world.bounds;
+    const signature = [relief, step, world.sea, world.objectsVisible, bounds.minX, bounds.minY, bounds.maxX, bounds.maxY, wb.minX, wb.minY, wb.maxX, wb.maxY].join(',');
+    if (this.terrainRevision === world.terrainRevision && this.objectsRevision === world.objectsRevision && this.objects === world.objects && this.signature === signature) return false;
+    const objectsChanged = this.objectsRevision !== world.objectsRevision || this.objects !== world.objects;
+    this.terrainRevision = world.terrainRevision; this.objectsRevision = world.objectsRevision; this.objects = world.objects; this.signature = signature;
+    const groups = new Map(); let changed = false;
+    if (world.objectsVisible) for (const o of objectsInBounds(world, bounds)) {
+      if (world.sample(o.x, o.y) <= world.sea + .002) continue;
       const key = variantKey(o); if (!groups.has(key)) groups.set(key, []); groups.get(key).push(o);
     }
     for (const [key, mesh] of this.meshes) if (!groups.has(key)) {
       this.scene.remove(mesh); mesh.dispose(); this.meshes.delete(key);
-      this.geometries.get(key)?.dispose(); this.geometries.delete(key);
+      this.geometries.get(key)?.dispose(); this.geometries.delete(key); changed = true;
     }
     for (const [type, objects] of groups) {
       if (!this.geometries.has(type)) this.geometries.set(type, createObjectGeometry(objects[0].type, objectSeason(objects[0]), objectLife(objects[0])));
       let mesh = this.meshes.get(type);
-      if (!objects.length) {
-        if (mesh) { this.scene.remove(mesh); mesh.dispose(); this.meshes.delete(type); }
+      const prior = this.groups.get(type);
+      if (mesh && !objectsChanged && prior?.length === objects.length && objects.every((o, i) => o === prior[i])) {
+        // Heights do not change an object's rotation, size, or tint. Reuse those
+        // attributes and upload only the matrix interval containing changed Y's.
+        const matrices = mesh.instanceMatrix.array; let first = Infinity, last = -1;
+        objects.forEach((o, i) => {
+          const offset = i * 16 + 13, height = Math.fround(objectGroundHeight(world, o.x, o.y, step) * relief);
+          if (matrices[offset] === height) return;
+          matrices[offset] = height; first = Math.min(first, offset); last = offset;
+        });
+        if (last >= 0) {
+          mesh.instanceMatrix.addUpdateRange(first, last - first + 1); mesh.instanceMatrix.needsUpdate = true;
+          mesh.computeBoundingSphere(); changed = true;
+        }
         continue;
       }
       if (!mesh || mesh.instanceMatrix.count < objects.length) {
@@ -86,9 +100,11 @@ export class ObjectView {
         mesh.setMatrixAt(i, this.transform.matrix);
         const tint = .83 + o.tint * .3; this.color.setRGB(tint, tint, tint * .96); mesh.setColorAt(i, this.color);
       });
+      mesh.instanceMatrix.clearUpdateRanges(); mesh.instanceMatrix.addUpdateRange(0, objects.length * 16);
       mesh.instanceMatrix.needsUpdate = true; mesh.instanceColor.needsUpdate = true;
-      mesh.computeBoundingSphere();
+      mesh.computeBoundingSphere(); changed = true;
     }
-    return true;
+    this.groups = groups;
+    return changed;
   }
 }

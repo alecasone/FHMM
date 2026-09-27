@@ -1,10 +1,11 @@
 import * as THREE from 'three';
+import { TerrainPicker } from './terrain-picking.js';
 import { CLOSEUP_DISTANCE, CAMERA_CLEARANCE, wheelZoomFactor, surfaceZoom } from './camera-navigation.js';
 import { objectGroundHeight } from './objects.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { OceanView, WATER_SURFACE_OFFSET } from './ocean-view.js';
 import { waterColor } from './water-colors.js';
-import { TILE, keyOf, clamp } from './world.js';
+import { TILE, FLOOR, keyOf, clamp } from './world.js';
 import { BIOME_COUNT, surfaceColor } from './biomes.js';
 import { RiverView } from './river-view.js';
 import { ObjectView } from './object-view.js';
@@ -15,7 +16,7 @@ import { attachScaleGrid } from './scale-grid.js';
 import { CursorReference } from './cursor-reference.js';
 export class SceneView {
   constructor(container, world) {
-    this.world = world; this.container = container; this.relief = 180; this.meshes = new Map(); this.pending = new Set(); this.needsDraw = true; this.sunAzimuth = 315; this.sunElevation = 32; this.step = 1;
+    this.world = world; this.container = container; this.relief = 180; this.meshes = new Map(); this.pending = new Set(); this.loadQueue = []; this.loadIndex = 0; this.needsDraw = true; this.sunAzimuth = 315; this.sunElevation = 32; this.step = 1;
     this.renderDistance = DEFAULT_RENDER_DISTANCE;
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false }); this.renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75)); this.renderer.setClearColor('#12232e'); this.renderer.outputColorSpace = THREE.SRGBColorSpace; container.appendChild(this.renderer.domElement);
     this.renderer.shadowMap.enabled = true; this.renderer.shadowMap.type = THREE.PCFShadowMap;
@@ -41,7 +42,7 @@ export class SceneView {
     this.brushPreviewMaterial = new THREE.MeshBasicMaterial({ transparent: true, opacity: 1, depthWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -1, toneMapped: false });
     const previewGeometry = new THREE.PlaneGeometry(2, 2, 32, 32); previewGeometry.rotateX(-Math.PI / 2);
     this.brushPreviewMesh = new THREE.Mesh(previewGeometry, this.brushPreviewMaterial); this.brushPreviewMesh.visible = false; this.brushPreviewMesh.frustumCulled = false; this.brushPreviewMesh.renderOrder = 9; this.scene.add(this.brushPreviewMesh); this.brushPreviewMask = undefined;
-    this.ray = new THREE.Raycaster(); this.pointer = new THREE.Vector2(); this.plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    this.terrainPicker = new TerrainPicker(); this.ray = new THREE.Raycaster(); this.pointer = new THREE.Vector2(); this.plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
     this.rivers = new RiverView(this.scene, world);
     this.objects = new ObjectView(this.scene, world);
     this.reference = new CursorReference(this.scene, world, container);
@@ -81,7 +82,7 @@ export class SceneView {
     this.controls.update();
     return hit;
   }
-  resize() { const w = this.container.clientWidth, h = this.container.clientHeight; if (!w || !h) return; this.renderer.setSize(w, h, false); this.camera.aspect = w / h; this.camera.updateProjectionMatrix(); this.needsDraw = true; }
+  resize() { const w = this.container.clientWidth, h = this.container.clientHeight; this.width = w; this.height = h; if (!w || !h) return; this.renderer.setSize(w, h, false); this.camera.aspect = w / h; this.camera.updateProjectionMatrix(); this.needsDraw = true; }
   setRoadPreview(points) { this.rivers.setPreview(points, this.relief); this.rivers.preview.material.color.set('#e2c897'); this.needsDraw = true; }
   setScaleGrid(visible, spacing = 128) {
     this.oceanView.setGrid(visible, spacing);
@@ -91,6 +92,9 @@ export class SceneView {
   setCursorReference(enabled, kind) { this.reference.configure(enabled, kind); this.needsDraw = true; }
   setRenderDistance(value) { this.renderDistance = normalizeRenderDistance(value, maximumRenderDistance(this.world.bounds)); this.needsDraw = true; }
   updateSun() {
+    const signature = [this.sunAzimuth, this.sunElevation, this.controls.target.x, this.controls.target.z].join(',');
+    if (signature === this.sunSignature) return;
+    this.sunSignature = signature;
     const direction = sunDirection(this.sunAzimuth, this.sunElevation), t = this.controls.target;
     this.sun.target.position.set(t.x, 0, t.z); this.sun.position.set(t.x + direction.x * 1800, direction.y * 1800, t.z + direction.z * 1800); this.needsDraw = true;
     this.renderer.shadowMap.needsUpdate = true;
@@ -106,7 +110,7 @@ export class SceneView {
     const delta = new THREE.Vector3(x - target.x, this.surfaceHeight(x, z) - this.surfaceHeight(target.x, target.z), z - target.z);
     this.camera.position.add(delta); target.add(delta); this.controls.update(); this.needsDraw = true;
   }
-  reset() { this.failed = false; for (const mesh of this.meshes.values()) { this.scene.remove(mesh); mesh.geometry.dispose(); } this.meshes.clear(); this.pending.clear(); this.oceanView.retain(new Set()); this.renderer.shadowMap.needsUpdate = true; this.cursor(null, 1); this.resize(); this.syncBounds(); }
+  reset() { this.failed = false; for (const mesh of this.meshes.values()) { this.scene.remove(mesh); mesh.geometry.dispose(); } this.meshes.clear(); this.pending.clear(); this.loadQueue = []; this.loadIndex = 0; this.windowSignature = null; this.oceanView.retain(new Set()); this.renderer.shadowMap.needsUpdate = true; this.cursor(null, 1); this.resize(); this.syncBounds(); }
   syncBounds() {
     const b = this.world.bounds, signature = [b.minX, b.minY, b.maxX, b.maxY, this.world.sea, this.world.ocean, this.relief].join(',');
     if (this.boundsSignature === signature) return; this.boundsSignature = signature;
@@ -132,25 +136,56 @@ export class SceneView {
       const geo = new THREE.PlaneGeometry(TILE, TILE, count - 1, count - 1); geo.rotateX(-Math.PI / 2); geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(count * count * 3), 3));
       mesh = new THREE.Mesh(geo, this.material); mesh.castShadow = true; mesh.receiveShadow = true; mesh.position.set(tx * TILE + TILE / 2, 0, ty * TILE + TILE / 2); this.meshes.set(key, mesh); this.scene.add(mesh);
     }
-    const pos = mesh.geometry.attributes.position, col = mesh.geometry.attributes.color, normals = mesh.geometry.attributes.normal; const color = new THREE.Color();
+    const world = this.world, b = world.bounds, originX = tx * TILE, originY = ty * TILE;
+    const geometrySignature = [world.terrainRevision, this.relief, b.maxX, b.maxY].join(',');
+    const geometryChanged = mesh.userData.geometrySignature !== geometrySignature;
+    const heights = [];
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) heights.push(world.tiles.get(keyOf(tx + dx, ty + dy)));
+    const floor = Math.fround(FLOOR);
+    const heightAt = (x, y) => {
+      const dx = x < 0 ? -1 : x >= TILE ? 1 : 0, dy = y < 0 ? -1 : y >= TILE ? 1 : 0;
+      return heights[(dy + 1) * 3 + dx + 1]?.[(y - dy * TILE) * TILE + x - dx * TILE] ?? floor;
+    };
+    // Resolve neighboring tile maps once, instead of allocating keys for each vertex.
+    const keys = [key, keyOf(tx + 1, ty), keyOf(tx, ty + 1), keyOf(tx + 1, ty + 1)];
+    const biomes = keys.map(k => world.biomes.get(k)), colors = keys.map(k => world.colors.get(k)), water = keys.map(k => world.waterPaint.get(k));
+    const pos = mesh.geometry.attributes.position, col = mesh.geometry.attributes.color, normals = mesh.geometry.attributes.normal;
+    const color = new THREE.Color(), rgb = [0, 0, 0];
     for (let y = 0; y < count; y++) for (let x = 0; x < count; x++) {
-      const wx = Math.min(this.world.bounds.maxX - 1, tx * TILE + x * step), wy = Math.min(this.world.bounds.maxY - 1, ty * TILE + y * step), h = this.world.get(wx, wy), i = y * count + x;
-      pos.setY(i, h * this.relief);
-      const left = this.world.get(wx - 1, wy), right = this.world.get(wx + 1, wy), up = this.world.get(wx, wy - 1), down = this.world.get(wx, wy + 1);
-      const ptx = Math.floor(wx / TILE), pty = Math.floor(wy / TILE), paint = this.world.biomes.get(keyOf(ptx, pty)), offset = ((wy - pty * TILE) * TILE + wx - ptx * TILE) * BIOME_COUNT;
-      const rgb = this.world.ocean && h < this.world.sea ? waterColor(this.world.sea - h, this.world.waterStyle, this.world.waterPaint.get(keyOf(ptx, pty)), offset / BIOME_COUNT * 4) : surfaceColor(h, this.world.sea, wx, wy, Math.hypot(left - right, up - down) * 50, paint, offset, this.world.biomesVisible, this.world.colors.get(keyOf(ptx, pty)), offset / BIOME_COUNT * 4);
+      const lx = Math.min(x * step, b.maxX - 1 - originX), ly = Math.min(y * step, b.maxY - 1 - originY);
+      const wx = originX + lx, wy = originY + ly, h = heightAt(lx, ly), i = y * count + x;
+      const left = heightAt(lx - 1, ly), right = heightAt(lx + 1, ly), up = heightAt(lx, ly - 1), down = heightAt(lx, ly + 1);
+      const tile = (lx >= TILE ? 1 : 0) + (ly >= TILE ? 2 : 0), index = (ly % TILE) * TILE + lx % TILE;
+      if (world.ocean && h < world.sea) waterColor(world.sea - h, world.waterStyle, water[tile], index * 4, rgb);
+      else surfaceColor(h, world.sea, wx, wy, Math.hypot(left - right, up - down) * 50, biomes[tile], index * BIOME_COUNT, world.biomesVisible, colors[tile], index * 4, rgb);
       color.setRGB(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255, THREE.SRGBColorSpace); col.setXYZ(i, color.r, color.g, color.b);
-      // Neighbour samples give identical normals on shared edges, including after edits.
-      const nx = (left - right) * this.relief, nz = (up - down) * this.relief, length = Math.hypot(nx, 2, nz); normals.setXYZ(i, nx / length, 2 / length, nz / length);
+      if (geometryChanged) {
+        pos.setY(i, h * this.relief);
+        const nx = (left - right) * this.relief, nz = (up - down) * this.relief, length = Math.hypot(nx, 2, nz);
+        normals.setXYZ(i, nx / length, 2 / length, nz / length);
+      }
     }
     this.oceanView.build(key, tx, ty, this.relief);
-    pos.needsUpdate = true; col.needsUpdate = true; normals.needsUpdate = true; mesh.geometry.computeBoundingSphere(); this.pending.delete(key);
-    this.renderer.shadowMap.needsUpdate = true;
+    col.needsUpdate = true; this.pending.delete(key);
+    if (geometryChanged) {
+      mesh.userData.geometrySignature = geometrySignature;
+      pos.needsUpdate = true; normals.needsUpdate = true;
+      mesh.geometry.computeBoundingSphere(); mesh.geometry.computeBoundingBox();
+      this.renderer.shadowMap.needsUpdate = true;
+    }
   }
   surfacePoint(event, fallback = true) {
-    const r = this.renderer.domElement.getBoundingClientRect(); if (!r.width || !r.height || this.contextLost) return null; this.pointer.set((event.clientX - r.left) / r.width * 2 - 1, -(event.clientY - r.top) / r.height * 2 + 1); this.camera.updateMatrixWorld(); this.scene.updateMatrixWorld(); this.ray.setFromCamera(this.pointer, this.camera);
-    const hits = this.ray.intersectObjects([...this.meshes.values(), ...(this.world.ocean ? [this.water] : [])], false);
-    if (hits.length) return hits[0].point;
+    const r = this.renderer.domElement.getBoundingClientRect(); if (!r.width || !r.height || this.contextLost) return null; this.pointer.set((event.clientX - r.left) / r.width * 2 - 1, -(event.clientY - r.top) / r.height * 2 + 1); this.camera.updateMatrixWorld(); this.ray.setFromCamera(this.pointer, this.camera);
+    let water = null, distance = Infinity;
+    if (this.world.ocean) {
+      this.plane.constant = -(this.world.sea * this.relief + WATER_SURFACE_OFFSET);
+      water = this.ray.ray.intersectPlane(this.plane, new THREE.Vector3());
+      const b = this.world.bounds;
+      if (water && (water.x < b.minX || water.x > b.maxX || water.z < b.minY || water.z > b.maxY)) water = null;
+      if (water) distance = water.distanceTo(this.ray.ray.origin);
+    }
+    const terrain = this.terrainPicker.intersect(this.ray.ray, this.meshes.values(), distance);
+    if (terrain || water) return terrain || water;
     if (!fallback) return null;
     this.plane.constant = -this.surfaceHeight(this.controls.target.x, this.controls.target.z);
     return this.ray.ray.intersectPlane(this.plane, new THREE.Vector3());
@@ -175,12 +210,17 @@ export class SceneView {
       }
       const angle = preview.rotation || 0;
       mesh.position.set(point.x, 0, point.y); mesh.scale.set(radius, 1, radius); mesh.rotation.y = -angle;
+      const previous = this.brushPreviewState;
+      if (!previous || previous.point.x !== point.x || previous.point.y !== point.y || previous.radius !== radius || previous.angle !== angle) this.previewSurfaceDirty = true;
       this.brushPreviewState = { point, radius, angle };
     }
     this.needsDraw = true;
   }
   updateBrushPreviewSurface() {
     if (!this.brushPreviewMesh.visible || !this.brushPreviewState) return;
+    const signature = [this.world.terrainRevision, this.world.sea, this.world.ocean, this.relief].join(',');
+    if (!this.previewSurfaceDirty && signature === this.previewSurfaceSignature) return;
+    this.previewSurfaceDirty = false; this.previewSurfaceSignature = signature;
     const { point, radius, angle } = this.brushPreviewState, cos = Math.cos(angle), sin = Math.sin(angle), pos = this.brushPreviewMesh.geometry.attributes.position;
     for (let i = 0; i < pos.count; i++) {
       const lx = pos.getX(i) * radius, lz = pos.getZ(i) * radius;
@@ -190,8 +230,11 @@ export class SceneView {
     pos.needsUpdate = true;
   }
   draw() {
-    if (!this.container.clientWidth || !this.container.clientHeight || this.contextLost) return;
-    const cameraSurfaceSignature = [this.world.revision, this.relief, this.world.sea, this.world.ocean].join(',');
+    if (!this.width || !this.height || this.contextLost) return;
+    const worldChanged = this.drawnRevision !== this.world.revision;
+    if (!this.needsDraw && !worldChanged && !this.pending.size && this.loadIndex >= this.loadQueue.length && !this.oceanView.pending.size && !(this.world.riversVisible && this.world.rivers.length)) return;
+    this.drawnRevision = this.world.revision;
+    const cameraSurfaceSignature = [this.world.terrainRevision, this.relief, this.world.sea, this.world.ocean].join(',');
     if (cameraSurfaceSignature !== this.cameraSurfaceSignature) { this.cameraSurfaceSignature = cameraSurfaceSignature; this.updateCamera(); }
     const b = this.world.bounds;
     const tx = Math.floor(clamp(this.controls.target.x, b.minX, b.maxX - 1) / TILE), ty = Math.floor(clamp(this.controls.target.z, b.minY, b.maxY - 1) / TILE);
@@ -199,20 +242,26 @@ export class SceneView {
     if (signature !== this.windowSignature) {
       this.windowSignature = signature;
       this.renderWindow = terrainWindow(b, this.controls.target.x, this.controls.target.z, this.renderDistance);
+      const { keys, tiles } = this.renderWindow;
+      this.oceanView.retain(keys);
+      for (const [key, mesh] of this.meshes) if (!keys.has(key)) {
+        this.scene.remove(mesh); mesh.geometry.dispose(); this.meshes.delete(key); this.pending.delete(key);
+        this.renderer.shadowMap.needsUpdate = true; this.needsDraw = true;
+      }
+      this.loadQueue = tiles.filter(tile => !this.meshes.has(tile.key)); this.loadIndex = 0;
     }
-    const { tiles, keys, bounds } = this.renderWindow;
-    this.oceanView.retain(keys);
-    // Release first, including cached shadows, so shrinking the slider frees GPU memory immediately.
-    for (const [key, mesh] of this.meshes) if (!keys.has(key)) {
-      this.scene.remove(mesh); mesh.geometry.dispose(); this.meshes.delete(key); this.pending.delete(key);
-      this.renderer.shadowMap.needsUpdate = true; this.needsDraw = true;
-    }
-    // Visible edits take precedence over streaming more terrain. Load the nearest tiles first.
-    const jobs = [...tiles.filter(tile => this.meshes.has(tile.key) && this.pending.has(tile.key)), ...tiles.filter(tile => !this.meshes.has(tile.key))];
+    const { bounds } = this.renderWindow;
+    // Consume persistent work queues; idle frames never rescan every loaded mesh.
     const started = performance.now(); let updated = 0;
-    for (const { key, x, y } of jobs) {
-      if (updated >= 4 || (updated && performance.now() - started >= 8)) break;
-      this.build(key, x, y); updated++; this.needsDraw = true;
+    while (updated < 4 && (!updated || performance.now() - started < 8)) {
+      let job;
+      if (this.pending.size) {
+        const key = this.pending.values().next().value; this.pending.delete(key);
+        if (!this.meshes.has(key)) continue;
+        const [x, y] = key.split(',').map(Number); job = { key, x, y };
+      } else if (this.loadIndex < this.loadQueue.length) job = this.loadQueue[this.loadIndex++];
+      else break;
+      this.build(job.key, job.x, job.y); updated++; this.needsDraw = true;
     }
     if (this.oceanView.update(this.relief)) this.needsDraw = true;
     if (this.rivers.update(this.relief, bounds)) this.needsDraw = true;
