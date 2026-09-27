@@ -1,3 +1,4 @@
+import { MAX_MAP_ZOOM, wheelZoomFactor } from './camera-navigation.js';
 import { DEFAULT_WATER_STYLE, waterColor } from './water-colors.js';
 import { objectIcon } from './object-icons.js';
 import { World, History, seedWorld, dab, TILE, resetWorld } from './world.js';
@@ -268,7 +269,7 @@ function endStroke() {
 function bindCanvas(canvas, pointFor, is3D = false) {
   canvas.addEventListener('contextmenu', e => e.preventDefault());
   canvas.addEventListener('pointerdown', e => {
-    if (e.button !== 0 && !(e.button === 1 && !is3D)) return;
+    if (e.button !== 0 && e.button !== 1) return;
     if (pickingBiome && e.button === 0) {
       const point = pointFor(e), index = point ? pickBiome(world, point.x, point.y) : null;
       if (index !== null) {
@@ -308,7 +309,13 @@ function rotateBrushFromWheel(e) {
   $('#rotation').value = degrees; $('#rotation-value').textContent = degrees + '°'; cursor(currentPoint);
 }
 for (const canvas of [$('#map'), scene?.renderer.domElement].filter(Boolean)) canvas.addEventListener('wheel', rotateBrushFromWheel, { capture: true, passive: false });
-$('#map').addEventListener('wheel', e => { e.preventDefault(); const before = map.point(e); if (!before) return; map.zoom = Math.max(.000001, Math.min(16, map.zoom * Math.exp(-e.deltaY * .001))); const after = map.point(e); map.center.x += before.x - after.x; map.center.y += before.y - after.y; map.needsDraw = true; }, { passive: false });
+$('#map').addEventListener('wheel', e => { e.preventDefault(); const before = map.point(e); if (!before) return; map.zoom = Math.max(.000001, Math.min(MAX_MAP_ZOOM, map.zoom / wheelZoomFactor(e))); const after = map.point(e); map.center.x += before.x - after.x; map.center.y += before.y - after.y; map.needsDraw = true; cursor(before); }, { passive: false });
+// Register after R+wheel so brush rotation wins before navigation sees the event.
+scene?.renderer.domElement.addEventListener('wheel', e => {
+  if (!scene.controls.enabled || !e.deltaY) return;
+  e.preventDefault(); e.stopImmediatePropagation();
+  const point = scene.zoomAt(e); cursor(point ? { x: point.x, y: point.z } : null);
+}, { capture: true, passive: false });
 function fit() { map.resize(); map.fit(); const b = world.bounds; scene?.resize(); scene?.focus((b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2, true); }
 function resetViews(notify = true) { endStroke(); currentPoint = null; map.reset(); scene?.reset(); fit(); $('.scene-error').hidden = !!scene && !scene.contextLost; $('#coordinates').textContent = 'X 0 · Y 0'; $('#status').textContent = 'Ready to sculpt'; if (notify) toast('Views rebuilt. Your terrain and paint are unchanged.'); }
 $('#reset-views').onclick = () => resetViews();

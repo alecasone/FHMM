@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { CLOSEUP_DISTANCE, CAMERA_CLEARANCE, wheelZoomFactor, surfaceZoom } from './camera-navigation.js';
+import { objectGroundHeight } from './objects.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { OceanView, WATER_SURFACE_OFFSET } from './ocean-view.js';
 import { waterColor } from './water-colors.js';
@@ -23,7 +25,7 @@ export class SceneView {
     this.renderer.domElement.addEventListener('webglcontextrestored', () => { this.contextLost = false; this.reset(); });
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(40, 1, 1, 15000); this.camera.position.set(850, 950, 1000);
-    this.controls = new OrbitControls(this.camera, this.renderer.domElement); this.controls.target.set(0, 0, 0); this.controls.enableDamping = false; this.controls.minDistance = 60; this.controls.maxDistance = 4500; this.controls.maxPolarAngle = Math.PI * .47; this.controls.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE }; this.controls.touches = { ONE: null, TWO: THREE.TOUCH.DOLLY_PAN }; this.controls.addEventListener('change', () => { this.needsDraw = true; }); this.controls.update();
+    this.controls = new OrbitControls(this.camera, this.renderer.domElement); this.controls.target.set(0, 0, 0); this.controls.enableDamping = false; this.controls.minDistance = CLOSEUP_DISTANCE; this.controls.screenSpacePanning = false; this.controls.maxDistance = 4500; this.controls.maxPolarAngle = Math.PI * .47; this.controls.mouseButtons = { LEFT: null, MIDDLE: null, RIGHT: THREE.MOUSE.ROTATE }; this.controls.touches = { ONE: null, TWO: THREE.TOUCH.DOLLY_PAN }; this.controls.addEventListener('change', () => this.updateCamera()); this.controls.update();
     this.scene.add(new THREE.HemisphereLight('#bbd6ee', '#56503d', .48));
     this.sun = new THREE.DirectionalLight('#fff1d7', 3.3); this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(2048, 2048); this.sun.shadow.camera.near = 1; this.sun.shadow.camera.far = 4500;
@@ -45,6 +47,40 @@ export class SceneView {
     this.reference = new CursorReference(this.scene, world, container);
     this.observer = new ResizeObserver(() => this.resize()); this.observer.observe(container); this.resize(); this.syncBounds();
   }
+  surfaceHeight(x, z) {
+    const b = this.world.bounds;
+    const h = objectGroundHeight(this.world, clamp(x, b.minX, b.maxX - .001), clamp(z, b.minY, b.maxY - .001), this.step) * this.relief;
+    return Math.max(h, this.world.ocean ? this.world.sea * this.relief + WATER_SURFACE_OFFSET : -Infinity);
+  }
+  updateCamera() {
+    if (this.adjustingCamera) return;
+    this.adjustingCamera = true;
+    try {
+      const position = this.camera.position;
+      let clearance = Infinity;
+      if (this.world.inside(position.x, position.z)) {
+        const surface = this.surfaceHeight(position.x, position.z);
+        if (position.y < surface + CAMERA_CLEARANCE) {
+          const lift = surface + CAMERA_CLEARANCE - position.y;
+          position.y += lift; this.controls.target.y += lift; this.controls.update();
+        }
+        clearance = position.y - surface;
+      }
+      // Retain depth precision when zoomed out without clipping close-up slopes.
+      const near = clamp(Math.min(this.controls.getDistance() * .005, clearance * .25), .02, 20);
+      if (Math.abs(this.camera.near - near) > .00001) { this.camera.near = near; this.camera.updateProjectionMatrix(); }
+      this.needsDraw = true;
+    } finally { this.adjustingCamera = false; }
+  }
+  zoomAt(event) {
+    if (!this.controls.enabled || !event.deltaY) return null;
+    const hit = this.surfacePoint(event, false), anchor = hit ?? this.controls.target;
+    const next = surfaceZoom(this.camera.position, this.controls.target, anchor, wheelZoomFactor(event), this.controls.maxDistance);
+    if (!next) return null;
+    this.camera.position.copy(next.position); this.controls.target.copy(next.target);
+    this.controls.update();
+    return hit;
+  }
   resize() { const w = this.container.clientWidth, h = this.container.clientHeight; if (!w || !h) return; this.renderer.setSize(w, h, false); this.camera.aspect = w / h; this.camera.updateProjectionMatrix(); this.needsDraw = true; }
   setRoadPreview(points) { this.rivers.setPreview(points, this.relief); this.rivers.preview.material.color.set('#e2c897'); this.needsDraw = true; }
   setScaleGrid(visible, spacing = 128) {
@@ -61,7 +97,15 @@ export class SceneView {
   }
   getRotation() { const t = this.controls.target; return wrapDegrees(Math.atan2(this.camera.position.x - t.x, -(this.camera.position.z - t.z)) * 180 / Math.PI); }
   setRotation(degrees) { const t = this.controls.target, d = Math.hypot(this.camera.position.x - t.x, this.camera.position.z - t.z), a = radians(degrees); this.camera.position.x = t.x + Math.sin(a) * d; this.camera.position.z = t.z - Math.cos(a) * d; this.controls.update(); this.needsDraw = true; }
-  pan(dx, dy) { const a = radians(this.getRotation()), scale = this.camera.position.distanceTo(this.controls.target) / 650; this.focus(this.controls.target.x + (Math.cos(a) * dx - Math.sin(a) * dy) * scale, this.controls.target.z + (Math.sin(a) * dx + Math.cos(a) * dy) * scale); }
+  pan(dx, dy) {
+    const a = radians(this.getRotation()), target = this.controls.target, scale = this.controls.getDistance() / 650;
+    const x = target.x + (Math.cos(a) * dx - Math.sin(a) * dy) * scale;
+    const z = target.z + (Math.sin(a) * dx + Math.cos(a) * dy) * scale;
+    // Preserve the current orbit offset after cursor zoom; only follow changes
+    // in ground elevation, so starting a pan cannot snap the camera up or down.
+    const delta = new THREE.Vector3(x - target.x, this.surfaceHeight(x, z) - this.surfaceHeight(target.x, target.z), z - target.z);
+    this.camera.position.add(delta); target.add(delta); this.controls.update(); this.needsDraw = true;
+  }
   reset() { this.failed = false; for (const mesh of this.meshes.values()) { this.scene.remove(mesh); mesh.geometry.dispose(); } this.meshes.clear(); this.pending.clear(); this.oceanView.retain(new Set()); this.renderer.shadowMap.needsUpdate = true; this.cursor(null, 1); this.resize(); this.syncBounds(); }
   syncBounds() {
     const b = this.world.bounds, signature = [b.minX, b.minY, b.maxX, b.maxY, this.world.sea, this.world.ocean, this.relief].join(',');
@@ -76,8 +120,8 @@ export class SceneView {
   }
   focus(x, y, fit = false) {
     const old = this.controls.target.clone(), b = this.world.bounds;
-    this.controls.target.set(x, 0, y);
-    if (fit) { const size = Math.max(b.maxX - b.minX, b.maxY - b.minY), a = Math.atan2(this.camera.position.x - old.x, -(this.camera.position.z - old.z)); this.camera.position.set(x + Math.sin(a) * size * 1.13, size * .72, y - Math.cos(a) * size * 1.13); }
+    this.controls.target.set(x, this.surfaceHeight(x, y), y);
+    if (fit) { const size = Math.max(b.maxX - b.minX, b.maxY - b.minY), a = Math.atan2(this.camera.position.x - old.x, -(this.camera.position.z - old.z)); this.camera.position.set(x + Math.sin(a) * size * 1.13, this.controls.target.y + size * .72, y - Math.cos(a) * size * 1.13); }
     else this.camera.position.add(this.controls.target.clone().sub(old));
     this.controls.update(); this.needsDraw = true;
   }
@@ -103,11 +147,17 @@ export class SceneView {
     pos.needsUpdate = true; col.needsUpdate = true; normals.needsUpdate = true; mesh.geometry.computeBoundingSphere(); this.pending.delete(key);
     this.renderer.shadowMap.needsUpdate = true;
   }
-  point(event) {
+  surfacePoint(event, fallback = true) {
     const r = this.renderer.domElement.getBoundingClientRect(); if (!r.width || !r.height || this.contextLost) return null; this.pointer.set((event.clientX - r.left) / r.width * 2 - 1, -(event.clientY - r.top) / r.height * 2 + 1); this.camera.updateMatrixWorld(); this.scene.updateMatrixWorld(); this.ray.setFromCamera(this.pointer, this.camera);
     const hits = this.ray.intersectObjects([...this.meshes.values(), ...(this.world.ocean ? [this.water] : [])], false);
-    const p = hits[0]?.point || this.ray.ray.intersectPlane(this.plane, new THREE.Vector3());
-    return p ? { x: p.x, y: p.z } : null;
+    if (hits.length) return hits[0].point;
+    if (!fallback) return null;
+    this.plane.constant = -this.surfaceHeight(this.controls.target.x, this.controls.target.z);
+    return this.ray.ray.intersectPlane(this.plane, new THREE.Vector3());
+  }
+  point(event) {
+    const point = this.surfacePoint(event);
+    return point ? { x: point.x, y: point.z } : null;
   }
   cursor(point, radius, preview = null) {
     this.reference.point = point ? { x: point.x, y: point.y } : null;
@@ -141,6 +191,8 @@ export class SceneView {
   }
   draw() {
     if (!this.container.clientWidth || !this.container.clientHeight || this.contextLost) return;
+    const cameraSurfaceSignature = [this.world.revision, this.relief, this.world.sea, this.world.ocean].join(',');
+    if (cameraSurfaceSignature !== this.cameraSurfaceSignature) { this.cameraSurfaceSignature = cameraSurfaceSignature; this.updateCamera(); }
     const b = this.world.bounds;
     const tx = Math.floor(clamp(this.controls.target.x, b.minX, b.maxX - 1) / TILE), ty = Math.floor(clamp(this.controls.target.z, b.minY, b.maxY - 1) / TILE);
     const signature = [b.minX, b.minY, b.maxX, b.maxY, tx, ty, this.renderDistance].join(',');
