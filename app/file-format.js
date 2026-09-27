@@ -1,17 +1,19 @@
+import { validateWaterStyle } from './water-colors.js';
 import { MIN_HEIGHT, MAX_HEIGHT } from './height-limits.js';
 import { World, History, TILE, metadataBytes } from './world.js';
 import { validateRivers } from './rivers.js';
 import { validateObjects, objectBytes, objectLimit } from './objects.js';
 import { BIOMES, BIOME_COUNT } from './biomes.js';
 const encoder = new TextEncoder(), decoder = new TextDecoder();
-const MAGIC = 'FMM7';
+const MAGIC = 'FMM8';
 const LEGACY_BIOME_IDS = ['grassland', 'forest', 'rainforest', 'taiga', 'savanna', 'desert', 'tundra', 'wetland', 'rock', 'snow'];
 const MAX_FILE_BYTES = 1024 * 1024 * 1024;
 export function encodeWorld(world, history) {
   const chunks = []; let offset = 0;
   const append = array => { const ref = { offset, length: array.length }; chunks.push(new Uint8Array(array.buffer, array.byteOffset, array.byteLength)); offset += array.byteLength; return ref; };
-  const metadata = { version: 7, tileSize: TILE, name: world.name, bounds: world.bounds, sea: world.sea, ocean: world.ocean, biomesVisible: world.biomesVisible, biomeIds: BIOMES.map(b => b.id), rivers: world.rivers, riversVisible: world.riversVisible, objects: world.objects, objectsVisible: world.objectsVisible,
+  const metadata = { version: 8, tileSize: TILE, name: world.name, bounds: world.bounds, sea: world.sea, ocean: world.ocean, waterStyle: world.waterStyle, biomesVisible: world.biomesVisible, biomeIds: BIOMES.map(b => b.id), rivers: world.rivers, riversVisible: world.riversVisible, objects: world.objects, objectsVisible: world.objectsVisible,
     tiles: [...world.tiles].map(([key, data]) => ({ key, data: append(data) })),
+    waterPaint: [...world.waterPaint].filter(([, data]) => data.some(v => v)).map(([key, data]) => ({ key, data: append(data) })),
     colors: [...world.colors].filter(([, data]) => data.some(v => v)).map(([key, data]) => ({ key, data: append(data) })),
     biomes: [...world.biomes].filter(([, data]) => data.some(v => v)).map(([key, data]) => ({ key, data: append(data) })),
     history: { cursor: history.cursor, trimmed: history.trimmed, entries: history.entries.map(entry => ({ label: entry.label, time: entry.time, reset: entry.reset, before: entry.before, after: entry.after, objects: entry.objects, patches: entry.patches?.map(p => ({ key: p.key, channel: p.channel ?? 'height', indices: append(p.indices), before: append(p.before), after: append(p.after) })) })) }
@@ -22,12 +24,13 @@ export function encodeWorld(world, history) {
 function validateBounds(b) { return b && ['minX', 'minY', 'maxX', 'maxY'].every(k => Number.isSafeInteger(b[k]) && b[k] % TILE === 0 && Math.abs(b[k]) <= 2 ** 24) && b.minX < b.maxX && b.minY < b.maxY; }
 function validKey(key) { return typeof key === 'string' && /^-?\d+,-?\d+$/.test(key) && key.split(',').every(n => Math.abs(Number(n)) < 2 ** 17); }
 function validateMeta(value) {
-  if (!value || typeof value !== 'object' || Object.keys(value).some(k => !['bounds', 'sea', 'ocean', 'biomesVisible', 'rivers', 'riversVisible', 'objectsVisible'].includes(k))) throw new Error('Invalid history metadata');
+  if (!value || typeof value !== 'object' || Object.keys(value).some(k => !['bounds', 'sea', 'ocean', 'biomesVisible', 'rivers', 'riversVisible', 'objectsVisible', 'waterStyle'].includes(k))) throw new Error('Invalid history metadata');
   if ('bounds' in value && !validateBounds(value.bounds)) throw new Error('Invalid history bounds');
   if ('sea' in value && (!Number.isFinite(value.sea) || value.sea < -.3 || value.sea > .7)) throw new Error('Invalid sea level');
   if ('ocean' in value && typeof value.ocean !== 'boolean') throw new Error('Invalid ocean layer');
   if ('biomesVisible' in value && typeof value.biomesVisible !== 'boolean') throw new Error('Invalid biome layer');
   if ('riversVisible' in value && typeof value.riversVisible !== 'boolean') throw new Error('Invalid river layer');
+  if ('waterStyle' in value) validateWaterStyle(value.waterStyle);
   if ('rivers' in value) validateRivers(value.rivers);
   if ('objectsVisible' in value && typeof value.objectsVisible !== 'boolean') throw new Error('Invalid objects layer');
 }
@@ -35,13 +38,13 @@ export async function decodeWorld(blob) {
   if (blob.size > MAX_FILE_BYTES || blob.size < 8) throw new Error('World file is too large or incomplete');
   const bytes = new Uint8Array(await blob.arrayBuffer());
   const magic = decoder.decode(bytes.subarray(0, 4));
-  if (!['FMM1', 'FMM2', 'FMM3', 'FMM4', 'FMM5', 'FMM6', MAGIC].includes(magic)) throw new Error('This is not an FMM world file');
+  if (!['FMM1', 'FMM2', 'FMM3', 'FMM4', 'FMM5', 'FMM6', 'FMM7', MAGIC].includes(magic)) throw new Error('This is not an FMM world file');
   const length = new DataView(bytes.buffer).getUint32(4, true), start = 8 + length;
   // River history lives in metadata. A full 256 MiB retained-history budget
   // can legitimately encode more than 64 MiB of JSON.
   if (length > 192 * 1024 * 1024 || start > bytes.length) throw new Error('World file header is damaged');
   const meta = JSON.parse(decoder.decode(bytes.subarray(8, start)));
-  if (![1, 2, 3, 4, 5, 6, 7].includes(meta.version) || magic !== `FMM${meta.version}` || meta.tileSize !== TILE || !validateBounds(meta.bounds) || !Array.isArray(meta.tiles) || meta.tiles.length > 16000) throw new Error('Unsupported or invalid world file');
+  if (![1, 2, 3, 4, 5, 6, 7, 8].includes(meta.version) || magic !== `FMM${meta.version}` || meta.tileSize !== TILE || !validateBounds(meta.bounds) || !Array.isArray(meta.tiles) || meta.tiles.length > 16000) throw new Error('Unsupported or invalid world file');
   validateMeta({ sea: meta.sea, ocean: meta.ocean });
   const world = new World(); world.name = String(meta.name || 'Untitled world').slice(0, 70); world.bounds = meta.bounds; world.sea = meta.sea; world.ocean = meta.ocean;
   if (meta.version >= 2) {
@@ -51,6 +54,7 @@ export async function decodeWorld(blob) {
   }
   if (meta.version >= 3) { validateMeta({ rivers: meta.rivers, riversVisible: meta.riversVisible }); world.rivers = meta.rivers; world.riversVisible = meta.riversVisible; }
   if (meta.version >= 4) { validateObjects(meta.objects, objectLimit(world)); validateMeta({ objectsVisible: meta.objectsVisible }); world.objects = meta.objects; world.objectsVisible = meta.objectsVisible; }
+  if (meta.version >= 8) { validateWaterStyle(meta.waterStyle); world.waterStyle = meta.waterStyle; }
   let allocated = 0;
   const read = (ref, Type, maxLength) => {
     if (!ref || !Number.isSafeInteger(ref.offset) || !Number.isSafeInteger(ref.length) || ref.offset < 0 || ref.length < 0 || ref.length > maxLength || ref.offset + ref.length * Type.BYTES_PER_ELEMENT > bytes.length - start) throw new Error('World contains damaged terrain data');
@@ -85,6 +89,15 @@ export async function decodeWorld(blob) {
       world.colors.set(tile.key, values);
     }
   }
+  if (meta.version >= 8) {
+    if (!Array.isArray(meta.waterPaint) || meta.waterPaint.length > 16000) throw new Error('Invalid water paint tiles');
+    for (const tile of meta.waterPaint) {
+      if (!validKey(tile.key) || world.waterPaint.has(tile.key)) throw new Error('Invalid water paint tile');
+      const values = read(tile.data, Uint8Array, TILE * TILE * 4);
+      if (values.length !== TILE * TILE * 4) throw new Error('Incomplete water paint tile');
+      world.waterPaint.set(tile.key, values);
+    }
+  }
   const history = new History(world), h = meta.history;
   if (!h || !Array.isArray(h.entries) || h.entries.length > 2000 || !Number.isInteger(h.cursor) || h.cursor < 0 || h.cursor > h.entries.length) throw new Error('Invalid undo history');
   for (const entry of h.entries) {
@@ -95,9 +108,9 @@ export async function decodeWorld(blob) {
       next.bytes = next.before ? metadataBytes(next.before, next.after) : 0;
       next.patches = entry.patches.map(p => {
         if (!validKey(p.key)) throw new Error('Invalid history tile');
-        const channel = p.channel ?? 'height'; if (!['height', 'biomes', 'colors'].includes(channel) || (channel === 'colors' && meta.version < 6) || (meta.version === 1 && channel !== 'height')) throw new Error('Invalid history channel');
-        const stride = channel === 'colors' ? 4 : channel === 'biomes' ? BIOME_COUNT : 1;
-        const readValues = ref => channel === 'colors' ? read(ref, Uint8Array, TILE * TILE * 4) : stride === 1 ? readHeights(ref, TILE * TILE) : readBiomes(ref);
+        const channel = p.channel ?? 'height'; if (!['height', 'biomes', 'colors', 'waterPaint'].includes(channel) || (channel === 'waterPaint' && meta.version < 8) || (channel === 'colors' && meta.version < 6) || (meta.version === 1 && channel !== 'height')) throw new Error('Invalid history channel');
+        const custom = channel === 'colors' || channel === 'waterPaint', stride = custom ? 4 : channel === 'biomes' ? BIOME_COUNT : 1;
+        const readValues = ref => custom ? read(ref, Uint8Array, TILE * TILE * 4) : stride === 1 ? readHeights(ref, TILE * TILE) : readBiomes(ref);
         const indices = read(p.indices, Uint16Array, TILE * TILE), before = readValues(p.before), after = readValues(p.after);
         if (indices.length * stride !== before.length || indices.length * stride !== after.length || indices.some(i => i >= TILE * TILE)) throw new Error('Invalid history samples');
         next.bytes += indices.byteLength + before.byteLength + after.byteLength; return { key: p.key, channel, indices, before, after };

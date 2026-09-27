@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { TILE, keyOf, terrainColor, clamp } from './world.js';
+import { OceanView, WATER_SURFACE_OFFSET } from './ocean-view.js';
+import { waterColor } from './water-colors.js';
+import { TILE, keyOf, clamp } from './world.js';
 import { BIOME_COUNT, surfaceColor } from './biomes.js';
 import { RiverView } from './river-view.js';
 import { ObjectView } from './object-view.js';
@@ -30,8 +32,8 @@ export class SceneView {
     this.sun.shadow.bias = -.00015; this.sun.shadow.normalBias = .7;
     this.scene.add(this.sun, this.sun.target); this.controls.addEventListener('change', () => this.updateSun()); this.updateSun();
     this.material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: .96, metalness: 0, side: THREE.DoubleSide });
-    this.water = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshStandardMaterial({ color: '#1d5061', transparent: true, opacity: .72, roughness: .57, metalness: .05, depthWrite: false, side: THREE.DoubleSide })); this.water.rotation.x = -Math.PI / 2; this.water.renderOrder = 2; this.water.receiveShadow = true; this.scene.add(this.water);
-    this.gridControls = [attachScaleGrid(this.material), attachScaleGrid(this.water.material)];
+    this.oceanView = new OceanView(this.scene, world); this.water = this.oceanView.base;
+    this.gridControls = [attachScaleGrid(this.material)];
     this.outline = new THREE.LineLoop(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: '#8bb2ad', transparent: true, opacity: .28 })); this.scene.add(this.outline);
     const ringPositions = new Float32Array(97 * 3); this.ring = new THREE.Line(new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(ringPositions, 3)), new THREE.LineBasicMaterial({ color: '#edffc0', depthTest: false, transparent: true, opacity: .95 })); this.ring.frustumCulled = false; this.ring.renderOrder = 10; this.ring.visible = false; this.scene.add(this.ring);
     this.brushPreviewMaterial = new THREE.MeshBasicMaterial({ transparent: true, opacity: 1, depthWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -1, toneMapped: false });
@@ -46,6 +48,7 @@ export class SceneView {
   resize() { const w = this.container.clientWidth, h = this.container.clientHeight; if (!w || !h) return; this.renderer.setSize(w, h, false); this.camera.aspect = w / h; this.camera.updateProjectionMatrix(); this.needsDraw = true; }
   setRoadPreview(points) { this.rivers.setPreview(points, this.relief); this.rivers.preview.material.color.set('#e2c897'); this.needsDraw = true; }
   setScaleGrid(visible, spacing = 128) {
+    this.oceanView.setGrid(visible, spacing);
     for (const control of this.gridControls) { control.visible.value = visible ? 1 : 0; control.spacing.value = spacing; }
     this.needsDraw = true;
   }
@@ -59,7 +62,7 @@ export class SceneView {
   getRotation() { const t = this.controls.target; return wrapDegrees(Math.atan2(this.camera.position.x - t.x, -(this.camera.position.z - t.z)) * 180 / Math.PI); }
   setRotation(degrees) { const t = this.controls.target, d = Math.hypot(this.camera.position.x - t.x, this.camera.position.z - t.z), a = radians(degrees); this.camera.position.x = t.x + Math.sin(a) * d; this.camera.position.z = t.z - Math.cos(a) * d; this.controls.update(); this.needsDraw = true; }
   pan(dx, dy) { const a = radians(this.getRotation()), scale = this.camera.position.distanceTo(this.controls.target) / 650; this.focus(this.controls.target.x + (Math.cos(a) * dx - Math.sin(a) * dy) * scale, this.controls.target.z + (Math.sin(a) * dx + Math.cos(a) * dy) * scale); }
-  reset() { this.failed = false; for (const mesh of this.meshes.values()) { this.scene.remove(mesh); mesh.geometry.dispose(); } this.meshes.clear(); this.pending.clear(); this.renderer.shadowMap.needsUpdate = true; this.cursor(null, 1); this.resize(); this.syncBounds(); }
+  reset() { this.failed = false; for (const mesh of this.meshes.values()) { this.scene.remove(mesh); mesh.geometry.dispose(); } this.meshes.clear(); this.pending.clear(); this.oceanView.retain(new Set()); this.renderer.shadowMap.needsUpdate = true; this.cursor(null, 1); this.resize(); this.syncBounds(); }
   syncBounds() {
     const b = this.world.bounds, signature = [b.minX, b.minY, b.maxX, b.maxY, this.world.sea, this.world.ocean, this.relief].join(',');
     if (this.boundsSignature === signature) return; this.boundsSignature = signature;
@@ -67,7 +70,7 @@ export class SceneView {
     this.controls.maxDistance = Math.max(4500, span * 4);
     this.camera.far = Math.max(15000, span * 8); this.camera.updateProjectionMatrix();
     const x = (b.minX + b.maxX) / 2, z = (b.minY + b.maxY) / 2;
-    this.water.position.set(x, this.world.sea * this.relief + .12, z); this.water.scale.set(b.maxX - b.minX, b.maxY - b.minY, 1); this.water.visible = this.world.ocean;
+    this.water.position.set(x, this.world.sea * this.relief + WATER_SURFACE_OFFSET, z); this.water.scale.set(b.maxX - b.minX, b.maxY - b.minY, 1); this.water.visible = this.world.ocean;
     const y = this.world.sea * this.relief + .4;
     this.outline.geometry.dispose(); this.outline.geometry = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(b.minX, y, b.minY), new THREE.Vector3(b.maxX, y, b.minY), new THREE.Vector3(b.maxX, y, b.maxY), new THREE.Vector3(b.minX, y, b.maxY)]); this.needsDraw = true;
   }
@@ -91,17 +94,18 @@ export class SceneView {
       pos.setY(i, h * this.relief);
       const left = this.world.get(wx - 1, wy), right = this.world.get(wx + 1, wy), up = this.world.get(wx, wy - 1), down = this.world.get(wx, wy + 1);
       const ptx = Math.floor(wx / TILE), pty = Math.floor(wy / TILE), paint = this.world.biomes.get(keyOf(ptx, pty)), offset = ((wy - pty * TILE) * TILE + wx - ptx * TILE) * BIOME_COUNT;
-      const rgb = this.world.ocean && h < this.world.sea ? terrainColor(h, this.world.sea, true) : surfaceColor(h, this.world.sea, wx, wy, Math.hypot(left - right, up - down) * 50, paint, offset, this.world.biomesVisible, this.world.colors.get(keyOf(ptx, pty)), offset / BIOME_COUNT * 4);
+      const rgb = this.world.ocean && h < this.world.sea ? waterColor(this.world.sea - h, this.world.waterStyle, this.world.waterPaint.get(keyOf(ptx, pty)), offset / BIOME_COUNT * 4) : surfaceColor(h, this.world.sea, wx, wy, Math.hypot(left - right, up - down) * 50, paint, offset, this.world.biomesVisible, this.world.colors.get(keyOf(ptx, pty)), offset / BIOME_COUNT * 4);
       color.setRGB(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255, THREE.SRGBColorSpace); col.setXYZ(i, color.r, color.g, color.b);
       // Neighbour samples give identical normals on shared edges, including after edits.
       const nx = (left - right) * this.relief, nz = (up - down) * this.relief, length = Math.hypot(nx, 2, nz); normals.setXYZ(i, nx / length, 2 / length, nz / length);
     }
+    this.oceanView.build(key, tx, ty, this.relief);
     pos.needsUpdate = true; col.needsUpdate = true; normals.needsUpdate = true; mesh.geometry.computeBoundingSphere(); this.pending.delete(key);
     this.renderer.shadowMap.needsUpdate = true;
   }
   point(event) {
     const r = this.renderer.domElement.getBoundingClientRect(); if (!r.width || !r.height || this.contextLost) return null; this.pointer.set((event.clientX - r.left) / r.width * 2 - 1, -(event.clientY - r.top) / r.height * 2 + 1); this.camera.updateMatrixWorld(); this.scene.updateMatrixWorld(); this.ray.setFromCamera(this.pointer, this.camera);
-    const hits = this.ray.intersectObjects([...this.meshes.values()], false);
+    const hits = this.ray.intersectObjects([...this.meshes.values(), ...(this.world.ocean ? [this.water] : [])], false);
     const p = hits[0]?.point || this.ray.ray.intersectPlane(this.plane, new THREE.Vector3());
     return p ? { x: p.x, y: p.z } : null;
   }
@@ -145,6 +149,7 @@ export class SceneView {
       this.renderWindow = terrainWindow(b, this.controls.target.x, this.controls.target.z, this.renderDistance);
     }
     const { tiles, keys, bounds } = this.renderWindow;
+    this.oceanView.retain(keys);
     // Release first, including cached shadows, so shrinking the slider frees GPU memory immediately.
     for (const [key, mesh] of this.meshes) if (!keys.has(key)) {
       this.scene.remove(mesh); mesh.geometry.dispose(); this.meshes.delete(key); this.pending.delete(key);
@@ -157,6 +162,7 @@ export class SceneView {
       if (updated >= 4 || (updated && performance.now() - started >= 8)) break;
       this.build(key, x, y); updated++; this.needsDraw = true;
     }
+    if (this.oceanView.update(this.relief)) this.needsDraw = true;
     if (this.rivers.update(this.relief, bounds)) this.needsDraw = true;
     if (this.objects.update(this.relief, bounds, this.step)) { this.needsDraw = true; this.renderer.shadowMap.needsUpdate = true; }
     if (this.needsDraw) { this.updateBrushPreviewSurface(); this.reference.update(this.camera, this.relief, this.step); this.renderer.render(this.scene, this.camera); this.needsDraw = false; }

@@ -1,3 +1,4 @@
+import { DEFAULT_WATER_STYLE, waterColor } from './water-colors.js';
 import { objectIcon } from './object-icons.js';
 import { World, History, seedWorld, dab, TILE, resetWorld } from './world.js';
 import { BIOMES, BIOME_COUNT } from './biomes.js';
@@ -22,9 +23,9 @@ let tool = 'raise', biome = 0, radius = 56, strength = .45, rotation = 0, brushM
 let modifiers = { shift: false, alt: false }, lastTime = 0, toastTimer;
 let rotateBrushHeld = false, rotateBrushUsed = false;
 let syncWorkspaceLimits = () => {};
-let customColor = null, creative = null;
+let customColor = null, creative = null, waterMode = false, waterTint = [72, 181, 166], waterStyleBefore = null;
 const colorHex = rgb => '#' + rgb.map(v => Math.round(v).toString(16).padStart(2, '0')).join('');
-const paintName = () => creative ? CREATIVE_PRESETS[creative.kind].name.toLowerCase() : customColor ? 'custom ' + colorHex(customColor) : BIOMES[biome].name.toLowerCase();
+const paintName = () => waterMode ? 'water tint ' + colorHex(waterTint) : creative ? CREATIVE_PRESETS[creative.kind].name.toLowerCase() : customColor ? 'custom ' + colorHex(customColor) : BIOMES[biome].name.toLowerCase();
 let brushPreviewEnabled = true, previewOpacity = .36, pickingBiome = false;
 try { const saved = localStorage.getItem("fmm-preview-opacity"); if (saved !== null && Number.isFinite(+saved)) previewOpacity = Math.max(0, Math.min(1, +saved)); } catch {}
 try { brushPreviewEnabled = localStorage.getItem('fmm-brush-preview-v1') !== 'false'; } catch { /* Preview remains enabled when browser storage is unavailable. */ }
@@ -34,6 +35,8 @@ let objectKind = 'pine', objectRadius = 56, objectDensity = .5, objectScale = 1,
 const labels = { raise: 'Raise terrain', lower: 'Lower terrain', flatten: 'Flatten terrain', smooth: 'Smooth terrain', meld: 'Meld terrain', stamp: 'Stamp terrain', pan: 'Pan view', paint: 'Paint biome', erase: 'Restore natural color', road: 'Paint road', scatter: 'Scatter objects', 'place-object': 'Place object', 'erase-object': 'Erase objects' };
 function toast(message) { $('#toast').textContent = message; $('#toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').hidden = true, 3500); }
 function brushSettings() {
+  $('#water-color-mode').checked = waterMode;
+  $('#water-brush-settings').hidden = !waterMode; $('#land-paint-settings').hidden = waterMode;
   const sculpt = ['raise', 'lower', 'stamp'].includes(tool), blend = brushMode === 'blend';
   const objects = isObjectTool(tool);
   $('#road-settings').hidden = tool !== 'road'; $('#standard-settings').hidden = tool === 'road' || objects;
@@ -55,7 +58,7 @@ function selectTool(next) {
   $('#modifier-hint').textContent = objects ? 'Erase objects temporarily' : painting ? 'Erase paint temporarily' : 'Smooth temporarily';
   document.querySelectorAll('[data-mode]').forEach(b => b.classList.toggle('active', b.dataset.mode === (objects ? 'objects' : painting ? 'paint' : 'sculpt')));
   document.querySelectorAll('[data-tool]').forEach(b => b.classList.toggle('active', b.dataset.tool === tool));
-  $('#stroke-hint').textContent = tool === 'road' ? 'Draw a road route · release to paint' : tool === 'paint' ? `Paint ${paintName()} · Shift to erase` : tool === 'erase' ? 'Remove biome paint to restore natural coloring' : tool === 'pan' ? 'Drag to move the view' : tool === 'stamp' ? 'Click to place a heightmap stamp' : `Click and drag to ${tool} terrain`;
+  $('#stroke-hint').textContent = tool === 'road' ? 'Draw a road route · release to paint' : tool === 'paint' ? `Paint ${paintName()} · Shift to erase` : tool === 'erase' ? (waterMode ? 'Erase water tint to restore depth colors' : 'Remove biome paint to restore natural coloring') : tool === 'pan' ? 'Drag to move the view' : tool === 'stamp' ? 'Click to place a heightmap stamp' : `Click and drag to ${tool} terrain`;
   if (objects) $('#stroke-hint').textContent = tool === 'erase-object' ? 'Drag to erase objects in the circle' : `${tool === 'scatter' ? 'Drag to scatter' : 'Click to place one'} · ${objectType(objectKind).name.toLowerCase()}`;
   $('#map').style.cursor = tool === 'pan' ? 'grab' : 'crosshair';
   brushSettings();
@@ -92,7 +95,7 @@ function setBiomePicking(enabled) {
   $('#pick-biome').textContent = enabled ? 'Click terrain · Esc cancels' : 'Pick from terrain';
 }
 function chooseBiome(index, { syncColor = true } = {}) {
-  endStroke(); creative = null; $('#paint-style').value = 'plain'; $('#creative-settings').hidden = true;
+  endStroke(); waterMode = false; creative = null; $('#paint-style').value = 'plain'; $('#creative-settings').hidden = true;
   customColor = null; biome = index; selectTool('paint');
   document.querySelectorAll('[data-biome]').forEach(button => button.classList.toggle('active', button.dataset.biome === BIOMES[index].id));
   if (syncColor) $('#biome-color-match').value = BIOMES[index].color;
@@ -100,7 +103,7 @@ function chooseBiome(index, { syncColor = true } = {}) {
 }
 $('#pick-biome').onclick = () => { endStroke(); setBiomePicking(!pickingBiome); };
 function chooseCustomColor(rgb) {
-  endStroke(); creative = null; $('#paint-style').value = 'plain'; $('#creative-settings').hidden = true; customColor = rgb.slice(); selectTool('paint');
+  endStroke(); waterMode = false; creative = null; $('#paint-style').value = 'plain'; $('#creative-settings').hidden = true; customColor = rgb.slice(); selectTool('paint');
   document.querySelectorAll('[data-biome]').forEach(button => button.classList.remove('active'));
   $('#biome-color-result').textContent = 'Painting custom color ' + colorHex(customColor);
 }
@@ -115,6 +118,15 @@ $('#use-custom-color').onclick = () => {
 $('#match-biome').onclick = () => {
   const hex = $('#biome-color-match').value;
   chooseBiome(nearestBiome([1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16))), { syncColor: false });
+};
+$('#water-color-mode').onchange = e => {
+  endStroke(); waterMode = e.target.checked; selectTool('paint');
+};
+$('#water-brush-color').oninput = e => {
+  endStroke(); waterTint = parsePaintColor(e.target.value); waterMode = true; selectTool('paint');
+};
+$('#edit-water-appearance').onclick = () => {
+  const panel = $('#panel-water'); panel.open = true; panel.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 };
 $('#preview-opacity').value = Math.round(previewOpacity * 100);
 $('#preview-opacity-value').textContent = Math.round(previewOpacity * 100) + '%';
@@ -163,7 +175,7 @@ for (const id of ['creative-size', 'strata-tilt', 'strata-angle', 'creative-colo
   $('#' + id).oninput = () => { endStroke(); updateCreativeSettings(); selectTool('paint'); };
 }
 function refresh() {
-  syncWorkspaceLimits();
+  syncWorkspaceLimits(); syncWaterAppearance();
   $('#undo').disabled = !history.cursor; $('#redo').disabled = history.cursor === history.entries.length;
   $('#history-count').textContent = `${history.entries.length.toLocaleString()} / 2,000`;
   $('#history-memory').textContent = `${(history.bytes / 1048576).toFixed(1)} MB of 256 MB${history.trimmed ? ` · ${history.trimmed} oldest steps retired` : ' history budget'}`;
@@ -176,7 +188,7 @@ function refresh() {
   if (last < history.entries.length) row(history.entries.length, 'Go to latest state', `${history.entries.length - last} more steps`);
   revealHistoryCursor();
   const b = world.bounds; $('#world-size').textContent = `${(b.maxX - b.minX).toLocaleString()} × ${(b.maxY - b.minY).toLocaleString()}`;
-  $('#world-stats').textContent = `${world.tiles.size} terrain tiles · ${((world.tiles.size * 4 + world.biomes.size * BIOME_COUNT + world.colors.size * 4) * TILE * TILE / 1048576).toFixed(1)} MB`;
+  $('#world-stats').textContent = `${world.tiles.size} terrain tiles · ${((world.tiles.size * 4 + world.biomes.size * BIOME_COUNT + (world.colors.size + world.waterPaint.size) * 4) * TILE * TILE / 1048576).toFixed(1)} MB`;
   $('#sea').value = Math.round(world.sea * 1000); $('#sea-value').textContent = `${Math.round(world.sea * 1000)} m`; $('#ocean').checked = world.ocean; $('#world-name').value = world.name;
   $('#biomes-visible').checked = world.biomesVisible;
   $('#objects-visible').checked = world.objectsVisible; $('#object-count').textContent = `${world.objects.length.toLocaleString()} / ${objectLimit(world).toLocaleString()}`;
@@ -216,15 +228,16 @@ function paint(point, dt = 1) {
     }
     return;
   }
-  dab(world, stroke, point.x, point.y, { tool: activeTool(), radius, strength, rotation, mask: tool === 'meld' ? null : mask, target: stroke.target, dt, biome, customColor, creative, mode: brushMode, strokeHeight });
+  dab(world, stroke, point.x, point.y, { tool: activeTool(), radius, strength, rotation, mask: tool === 'meld' ? null : mask, target: stroke.target, dt, biome, customColor, creative, waterColor: waterMode ? waterTint : null, mode: brushMode, strokeHeight });
 }
 function startStroke(point) {
   if (!point || !world.inside(point.x, point.y)) return;
   const painting = tool === 'paint' || tool === 'erase';
-  if (painting && !world.biomesVisible) { toast('Show the Biomes layer before painting.'); return; }
+  if (painting && waterMode && !world.ocean) { toast('Show the Ocean layer before coloring water.'); return; }
+  if (painting && !waterMode && !world.biomesVisible) { toast('Show the Biomes layer before painting.'); return; }
   if (isObjectTool(tool) && !world.objectsVisible) { toast('Show the Objects layer before editing objects.'); return; }
   if (tool === 'road' && !world.biomesVisible) { toast('Show the Biomes layer before painting roads.'); return; }
-  const selected = activeTool(), label = selected === 'paint' ? `Paint ${paintName()}` : selected === 'scatter' || selected === 'place-object' ? `${selected === 'scatter' ? 'Scatter' : 'Place'} ${objectType(objectKind).name.toLowerCase()}` : labels[selected];
+  const selected = activeTool(), label = selected === 'erase' && waterMode ? 'Erase water tint' : selected === 'paint' ? `Paint ${paintName()}` : selected === 'scatter' || selected === 'place-object' ? `${selected === 'scatter' ? 'Scatter' : 'Place'} ${objectType(objectKind).name.toLowerCase()}` : labels[selected];
   stroke = history.begin(`${selected === 'road' ? ROAD_TYPES[roadType].name : label}${brushMode === 'blend' && ['raise', 'lower', 'stamp'].includes(selected) ? ' · Blend' : ''}`); stroke.target = world.sample(point.x, point.y);
   if (tool === 'road') roadGuide = [{ ...point }];
   strokePath = new StrokePath(point, isObjectTool(tool) ? Math.max(1, objectRadius * .2) : tool === 'road' ? Math.max(3, roadWidth * .25) : Math.max(2, radius * .16)); lastTime = performance.now(); paint(point);
@@ -304,6 +317,43 @@ document.querySelectorAll('[data-reset]').forEach(button => button.onclick = () 
 $('#fit').onclick = fit; $('#focus').onclick = () => scene?.focus(map.center.x, map.center.y);
 document.querySelectorAll('[data-layout]').forEach(b => b.onclick = () => { endStroke(); cursor(null); $('.viewports').dataset.layout = b.dataset.layout; document.querySelectorAll('[data-layout].active').forEach(el => el.classList.remove('active')); b.classList.add('active'); requestAnimationFrame(() => { map.resize(); scene?.resize(); }); });
 $('#contours').onchange = e => { map.contours = e.target.checked; map.invalidate(); };
+function syncWaterAppearance() {
+  const style = world.waterStyle;
+  for (const field of ['shallow', 'deep', 'depth', 'curve']) {
+    const input = $('#water-' + field);
+    if (document.activeElement !== input) input.value = style[field];
+  }
+  $('#water-depth-value').textContent = style.depth + ' m';
+  $('#water-curve-value').textContent = style.curve.toFixed(2);
+  const stops = Array.from({ length: 9 }, (_, i) => 'rgb(' + waterColor(i / 8 * style.depth / 1000, style).map(Math.round).join(',') + ') ' + i / 8 * 100 + '%');
+  $('#water-gradient').style.background = 'linear-gradient(90deg,' + stops.join(',') + ')';
+}
+function redrawWaterAppearance() {
+  world.revision++; map.invalidate(); if (scene) scene.needsDraw = true;
+  syncWaterAppearance();
+}
+function commitWaterAppearance() {
+  if (!waterStyleBefore) return;
+  const before = waterStyleBefore; waterStyleBefore = null;
+  history.metadata('Change water appearance', { waterStyle: before }, { waterStyle: { ...world.waterStyle } });
+  changed();
+}
+for (const field of ['shallow', 'deep', 'depth', 'curve']) {
+  const input = $('#water-' + field);
+  input.oninput = () => {
+    endStroke(); waterStyleBefore ??= { ...world.waterStyle };
+    world.waterStyle = { ...world.waterStyle, [field]: ['depth', 'curve'].includes(field) ? +input.value : input.value };
+    redrawWaterAppearance();
+  };
+  input.onchange = commitWaterAppearance;
+  input.addEventListener('blur', commitWaterAppearance);
+}
+$('#reset-water-colors').onclick = () => {
+  endStroke(); commitWaterAppearance();
+  const before = { ...world.waterStyle }; world.waterStyle = { ...DEFAULT_WATER_STYLE };
+  history.metadata('Reset water appearance', { waterStyle: before }, { waterStyle: { ...world.waterStyle } });
+  redrawWaterAppearance(); changed();
+};
 let seaBefore = null;
 $('#sea').oninput = e => { seaBefore ??= world.sea; world.sea = +e.target.value / 1000; $('#sea-value').textContent = `${e.target.value} m`; map.invalidate(); scene?.invalidate(); };
 $('#sea').onchange = () => { history.metadata('Change sea level', { sea: seaBefore ?? world.sea }, { sea: world.sea }); seaBefore = null; changed(); };

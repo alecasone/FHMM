@@ -115,3 +115,5 @@ body.menu-top-hidden{--menu-top-height:0px}
 #scene{position:relative}
 .cursor-scale-label{position:absolute;z-index:3;pointer-events:none;transform:translate(-50%,-100%);padding:4px 7px;white-space:nowrap;font-size:11px;color:#e1e8d8;background:#18272de8;border:1px solid #83968088;border-radius:4px}
 #map-grid-scale{color:#b3c3b5}
+
+.water-colors input[type=color]{width:46px;height:30px;border:1px solid var(--line);padding:2px;background:#202c2d;border-radius:4px;cursor:pointer}.water-colors button{width:100%;font-size:12px}#water-brush-settings{margin:8px 0 12px}#water-gradient{height:18px;border-radius:4px;border:1px solid var(--line);margin:10px 0 14px;background:linear-gradient(90deg,#79dcd0,#07152f)}
